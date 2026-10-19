@@ -3,7 +3,7 @@
 import { lazy, Suspense, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { RefreshCw } from 'lucide-react';
-import { useAuth } from '../hooks/UseAuth';
+import { useAuth } from './hooks/UseAuth';
 
 // This file is imported eagerly from App.tsx and stays in the main bundle.
 // `AuthContext` already wraps the whole app (see main.tsx), so calling

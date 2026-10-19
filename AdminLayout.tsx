@@ -7,7 +7,7 @@ import {
   Package2, LayoutDashboard, ShoppingBag, Layers, FolderOpen, Percent,
   ChevronRight, Archive, ArrowLeft, BarChart3, Shirt,
 } from 'lucide-react';
-import { ordersApi, Order } from '../api/orders';
+import { ordersApi, Order } from './api/orders';
 import {
   AdminSection,
   DashboardSection,

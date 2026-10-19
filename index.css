@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@source "./*.{js,ts,jsx,tsx}";
+@source "./app/**/*.{js,ts,jsx,tsx}";
 
 @font-face {
   font-family: 'Neue Haas Grotesk Text Pro';

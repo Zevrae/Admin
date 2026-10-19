@@ -16,12 +16,12 @@ import {
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table';
-import { productsApi, Product } from '../api/products';
-import { collectionsApi, Collection } from '../api/collections';
-import { categoriesApi, Category } from '../api/categories';
-import { discountsApi, Discount } from '../api/discounts';
-import { ordersApi, Order } from '../api/orders';
-import { analysisApi, AnalysisSummary } from '../api/analysis';
+import { productsApi, Product } from './api/products';
+import { collectionsApi, Collection } from './api/collections';
+import { categoriesApi, Category } from './api/categories';
+import { discountsApi, Discount } from './api/discounts';
+import { ordersApi, Order } from './api/orders';
+import { analysisApi, AnalysisSummary } from './api/analysis';
 import RichTextEditor from './RichTextEditor';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -678,7 +678,7 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
                                   {/* Download Receipt */}
                                   <button
                                     onClick={async () => {
-                                      const { generateReceiptPdf } = await import('../utils/generateReceiptPdf');
+                                      const { generateReceiptPdf } = await import('./utils/generateReceiptPdf');
                                       generateReceiptPdf(order);
                                     }}
                                     className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2.5 text-[9px] uppercase tracking-[0.15em] font-sans border border-[rgba(var(--theme-accent-rgb),0.35)] text-[var(--theme-accent)] rounded-sm hover:bg-[rgba(var(--theme-accent-rgb),0.08)] hover:border-[var(--theme-accent)] transition-all duration-200"

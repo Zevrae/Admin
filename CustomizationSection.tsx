@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Image from 'next/image';
 import { Plus, Edit2, Trash2, Upload, Save, X, RefreshCw, Palette, AlertTriangle } from 'lucide-react';
-import { customizableGarmentsApi, CustomizableGarment, GarmentColor } from '../api/customization';
+import { customizableGarmentsApi, CustomizableGarment, GarmentColor } from './api/customization';
 
 // Turns any axios/JS error into a message that always includes enough to
 // diagnose it from a screenshot (status code + backend message when present)
