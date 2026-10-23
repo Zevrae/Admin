@@ -2,7 +2,6 @@
 
 import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { useRouter } from 'next/navigation';
 import {
   Package2, LayoutDashboard, ShoppingBag, Layers, FolderOpen, Percent,
   ChevronRight, Archive, ArrowLeft, BarChart3, Shirt,
@@ -97,7 +96,6 @@ function Sidebar({ active, setActive, isMobileOpen, onClose }: {
 // defense-in-depth belt-and-braces guard in case it's ever rendered from
 // somewhere else in the tree.
 export default function AdminLayout() {
-  const router = useRouter();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
@@ -140,9 +138,13 @@ export default function AdminLayout() {
   }, []);
 
   // Real-time order updates aren't wired up on the backend (no websocket/SSE
-  // endpoint), so we poll instead.
+  // endpoint), so we poll instead when the tab is active.
   useEffect(() => {
-    const poll = setInterval(() => fetchOrders(false), 5000);
+    const poll = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        fetchOrders(false);
+      }
+    }, 5000);
     return () => clearInterval(poll);
   }, []);
 

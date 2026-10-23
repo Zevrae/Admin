@@ -18,7 +18,7 @@ export interface Product {
   collections: string[]; // multiple collection IDs
   created_at: string;
   updated_at: string;
-  is_deleted?: boolean; // optional, since excluded by default queries
+  is_deleted?: boolean;
   deleted_at?: string | null;
 }
 
@@ -27,7 +27,7 @@ export interface ProductListParams {
   limit?: number;
   category?: string;
   subcategory?: string;
-  collection?: string; // single collection filter
+  collection?: string;
   status?: string;
   search?: string;
   sort?: string;
@@ -88,13 +88,5 @@ export const productsApi = {
   deleteImage: async (id: string, imageUrl: string): Promise<Product> => {
     const response = await api.delete(`/products/${id}/images`, { data: { imageUrl } });
     return response.data.data;
-  },
-
-  // Works for guests (pass email) and logged-in users (email auto-filled
-  // server-side from the account — omit it here). Rejects with a 400 if the
-  // product/size is actually in stock.
-  notifyMe: async (productId: string, payload: { email?: string; size?: string }): Promise<{ message: string }> => {
-    const response = await api.post(`/products/${productId}/notify`, payload);
-    return response.data;
   },
 };
