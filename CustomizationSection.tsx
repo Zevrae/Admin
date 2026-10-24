@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import Image from 'next/image';
 import { Plus, Edit2, Trash2, Upload, Save, X, RefreshCw, Palette, AlertTriangle } from 'lucide-react';
 import { customizableGarmentsApi, CustomizableGarment, GarmentColor } from './api/customization';
+import { SectionHeader, FormField, Modal, inputCls, selectCls, baseInputCls } from './components/AdminUI';
 
 // Turns any axios/JS error into a message that always includes enough to
 // diagnose it from a screenshot (status code + backend message when present)
@@ -26,57 +27,6 @@ function ErrorBanner({ message }: { message: string }) {
   );
 }
 
-// ─── Shared styling, mirrored from AdminSections.tsx so this file stays
-// visually consistent without needing those (unexported) helpers ──────────
-const baseInputCls =
-  'bg-[var(--theme-bg)] border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm px-3 text-[12px] text-[var(--theme-text)] font-mono placeholder:text-[rgba(var(--theme-text-rgb),0.2)] focus:outline-none focus:border-[rgba(var(--theme-accent-rgb),0.4)] transition-colors';
-const inputCls = `w-full py-2.5 ${baseInputCls}`;
-const selectCls = `${inputCls} cursor-pointer`;
-
-function SectionHeader({ title, action, onAction }: { title: string; action?: string; onAction?: () => void }) {
-  return (
-    <div className="flex items-center justify-between mb-6">
-      <h2 className="text-[13px] uppercase tracking-[0.2em] font-sans text-[var(--theme-text)]">{title}</h2>
-      {action && (
-        <button
-          onClick={onAction}
-          className="flex items-center gap-2 px-4 py-2 text-[10px] uppercase tracking-[0.15em] font-sans bg-[var(--theme-accent)] text-[var(--theme-bg)] hover:brightness-110 transition-colors duration-200 rounded-sm"
-        >
-          <Plus size={12} />
-          {action}
-        </button>
-      )}
-    </div>
-  );
-}
-
-function FormField({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="mb-4">
-      <label className="block text-[10px] uppercase tracking-[0.15em] font-sans text-[rgba(var(--theme-text-rgb),0.5)] mb-2">{label}</label>
-      {children}
-    </div>
-  );
-}
-
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 py-8" onClick={onClose}>
-      <div
-        className="bg-[var(--theme-surface)] border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm w-full max-w-2xl max-h-full flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[rgba(var(--theme-text-rgb),0.1)] flex-shrink-0">
-          <h3 className="text-[11px] uppercase tracking-[0.2em] font-sans text-[var(--theme-accent)]">{title}</h3>
-          <button onClick={onClose} className="text-[rgba(var(--theme-text-rgb),0.4)] hover:text-[var(--theme-text)] transition-colors">
-            <X size={16} />
-          </button>
-        </div>
-        <div className="p-6 overflow-y-auto">{children}</div>
-      </div>
-    </div>
-  );
-}
 
 const ALL_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
 

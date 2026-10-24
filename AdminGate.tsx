@@ -5,15 +5,8 @@ import { useRouter } from 'next/navigation';
 import { RefreshCw } from 'lucide-react';
 import { useAuth } from './hooks/UseAuth';
 
-// This file is imported eagerly from App.tsx and stays in the main bundle.
-// `AuthContext` already wraps the whole app (see main.tsx), so calling
-// useAuth() here costs nothing extra — no admin code is touched yet.
-//
-// AdminLayout (Sidebar, top nav, all the *Section components, recharts-style
-// dashboard bits, and now Tiptap) is only require()'d via this dynamic
-// import() call, and that call only happens once `isAdmin` is confirmed
-// true below. An unauthenticated or non-admin visitor never triggers the
-// network request for the admin chunk at all.
+// AdminLayout is dynamically imported once an admin session is verified,
+// preventing unauthenticated users from downloading the admin bundle.
 const AdminLayout = lazy(() => import('./AdminLayout'));
 
 function AdminLoadingScreen({ label }: { label: string }) {

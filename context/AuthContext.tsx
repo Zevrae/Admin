@@ -1,20 +1,8 @@
 'use client';
 
 import React, { createContext, useState, useEffect, ReactNode } from 'react';
-import { authApi, LoginData, RegisterData } from '../api/auth';
+import { authApi, LoginData } from '../api/auth';
 import { tokenUtils } from '../utils/token';
-
-interface Address {
-  id?: string;
-  label?: string;
-  line1: string;
-  line2?: string;
-  city: string;
-  state?: string;
-  postal_code: string;
-  country: string;
-  is_default?: boolean;
-}
 
 interface User {
   _id: string;
@@ -23,7 +11,6 @@ interface User {
   email: string;
   role: string;
   phone?: string;
-  addresses?: Address[];
   is_active: boolean;
   is_email_verified: boolean;
 }
@@ -33,8 +20,6 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   login: (data: LoginData) => Promise<void>;
-  loginWithGoogle: (credential: string) => Promise<void>;
-  register: (data: RegisterData) => Promise<any>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -72,43 +57,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setLoading(true);
     try {
       const response = await authApi.login(formData);
-      const { token, data } = response;
+      const { token: receivedToken, data } = response;
 
-      tokenUtils.setToken(token);
-      setToken(token);
+      tokenUtils.setToken(receivedToken);
+      setToken(receivedToken);
       setUser(data);
-    } catch (error) {
-      throw error;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loginWithGoogle = async (credential: string) => {
-    setLoading(true);
-    try {
-      const response = await authApi.googleLogin(credential);
-      const { token, data } = response;
-
-      tokenUtils.setToken(token);
-      setToken(token);
-      setUser(data);
-    } catch (error) {
-      throw error;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Register does NOT log the user in — no token or user state is set.
-  // Just returns the backend response so the UI can show the success message.
-  const register = async (formData: RegisterData) => {
-    setLoading(true);
-    try {
-      const response = await authApi.register(formData);
-      return response;
-    } catch (error) {
-      throw error;
     } finally {
       setLoading(false);
     }
@@ -138,7 +91,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, loginWithGoogle, register, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, token, loading, login, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );
