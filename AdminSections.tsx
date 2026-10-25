@@ -774,37 +774,82 @@ export function ProductsSection() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [availableCategories, setAvailableCategories] = useState<Category[]>([]);
 
+  const fetchAvailableCategories = useCallback(async () => {
+    try {
+      const { data } = await categoriesApi.list();
+      const backendNames = (data || []).filter((c: Category) => !c.parent).map((c: Category) => c.name);
+      const localOnly = Object.keys(CATEGORY_MAP).filter(n => !backendNames.some(bn => bn.toLowerCase() === n.toLowerCase()));
+      const synthetic: Category[] = localOnly.map((name, i) => ({
+        id: `local-${i}`,
+        name,
+        slug: name.toLowerCase(),
+        parent: null,
+        status: 'active' as const,
+        created_at: '',
+      }));
+      setAvailableCategories([...(data || []), ...synthetic]);
+    } catch {
+      const fallback: Category[] = Object.keys(CATEGORY_MAP).map((name, i) => ({
+        id: `local-${i}`,
+        name,
+        slug: name.toLowerCase(),
+        parent: null,
+        status: 'active' as const,
+        created_at: '',
+      }));
+      setAvailableCategories(fallback);
+    }
+  }, []);
+
   useEffect(() => {
     collectionsApi.list({ status: 'active' })
       .then(({ data }) => setCollections(data || []))
       .catch(() => setCollections([]));
 
-    categoriesApi.list()
-      .then(({ data }) => {
-        const backendNames = (data || []).filter((c: Category) => !c.parent).map((c: Category) => c.name);
-        const localOnly = Object.keys(CATEGORY_MAP).filter(n => !backendNames.includes(n));
-        const synthetic: Category[] = localOnly.map((name, i) => ({
-          id: `local-${i}`,
-          name,
-          slug: name.toLowerCase(),
-          parent: null,
-          status: 'active' as const,
-          created_at: '',
-        }));
-        setAvailableCategories([...(data || []), ...synthetic]);
-      })
-      .catch(() => {
-        const fallback: Category[] = Object.keys(CATEGORY_MAP).map((name, i) => ({
-          id: `local-${i}`,
-          name,
-          slug: name.toLowerCase(),
-          parent: null,
-          status: 'active' as const,
-          created_at: '',
-        }));
-        setAvailableCategories(fallback);
+    fetchAvailableCategories();
+  }, [fetchAvailableCategories]);
+
+  const getSubcategoriesForCategory = useCallback((catName: string) => {
+    if (!catName) return [];
+    
+    // Find parent category in availableCategories
+    const matchedCat = availableCategories.find(c => {
+      const isParent = !c.parent;
+      return isParent && (c.name.toLowerCase() === catName.toLowerCase() || c.id === catName);
+    });
+
+    // 1. Subcategories defined in backend / database
+    const dbSubs: string[] = [];
+    if (matchedCat) {
+      availableCategories.forEach(c => {
+        if (!c.parent) return;
+        const pid = typeof c.parent === 'string' ? c.parent : ((c.parent as any)?.id || (c.parent as any)?._id);
+        const pname = typeof c.parent === 'object' ? (c.parent as any)?.name : null;
+        if (
+          pid === matchedCat.id ||
+          (matchedCat as any)._id === pid ||
+          pid === matchedCat.name ||
+          (pname && pname.toLowerCase() === matchedCat.name.toLowerCase())
+        ) {
+          dbSubs.push(c.name);
+        }
       });
-  }, []);
+    }
+
+    // 2. Default subcategories from CATEGORY_MAP
+    const mapKey = Object.keys(CATEGORY_MAP).find(k => k.toLowerCase() === catName.toLowerCase());
+    const staticSubs = mapKey ? CATEGORY_MAP[mapKey] : [];
+
+    // Combine them with DB subcategories prioritized, case-insensitive deduplication
+    const combined: string[] = [...dbSubs];
+    for (const sub of staticSubs) {
+      if (!combined.some(s => s.toLowerCase() === sub.toLowerCase())) {
+        combined.push(sub);
+      }
+    }
+
+    return combined;
+  }, [availableCategories]);
 
   const fetchDbProducts = useCallback(async () => {
     setDbLoading(true);
@@ -849,6 +894,7 @@ export function ProductsSection() {
   useEffect(() => { fetchDbProducts(); }, [fetchDbProducts]);
 
   const openAdd = () => {
+    fetchAvailableCategories();
     setEditingId(null);
     setForm(emptyForm());
     setImageFiles([]);
@@ -857,6 +903,7 @@ export function ProductsSection() {
   };
 
   const openEdit = useCallback((p: DbProduct) => {
+    fetchAvailableCategories();
     setEditingId(p.id);
     setForm({
       name: p.name,
@@ -876,7 +923,7 @@ export function ProductsSection() {
     setImageFiles([]);
     setFormError('');
     setShowModal(true);
-  }, []);
+  }, [fetchAvailableCategories]);
 
   const toggleSize = (s: string) => {
     setForm(f => {
@@ -1231,7 +1278,7 @@ export function ProductsSection() {
                   value={form.category} 
                   onChange={e => {
                     const cat = e.target.value;
-                    const subs = CATEGORY_MAP[cat] || [];
+                    const subs = getSubcategoriesForCategory(cat);
                     setForm(f => ({ ...f, category: cat, subcategory: subs[0] || '' }));
                   }} 
                   className={selectCls}
@@ -1243,20 +1290,32 @@ export function ProductsSection() {
                 </select>
               </FormField>
               <FormField label="Subcategory *">
-                {(CATEGORY_MAP[form.category] || []).length > 0 ? (
-                  <select
-                    value={form.subcategory}
-                    onChange={e => setForm(f => ({ ...f, subcategory: e.target.value }))}
-                    className={selectCls}
-                  >
-                    <option value="" disabled>Select a subcategory</option>
-                    {(CATEGORY_MAP[form.category] || []).map(sub => (
-                      <option key={sub} value={sub}>{sub}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input value={form.subcategory} onChange={e => setForm(f => ({ ...f, subcategory: e.target.value }))} className={inputCls} placeholder="e.g. T-Shirts" />
-                )}
+                {(() => {
+                  const currentSubcategories = getSubcategoriesForCategory(form.category);
+                  const allOptions = form.subcategory && !currentSubcategories.some(s => s.toLowerCase() === form.subcategory.toLowerCase())
+                    ? [form.subcategory, ...currentSubcategories]
+                    : currentSubcategories;
+
+                  return allOptions.length > 0 ? (
+                    <select
+                      value={form.subcategory}
+                      onChange={e => setForm(f => ({ ...f, subcategory: e.target.value }))}
+                      className={selectCls}
+                    >
+                      <option value="" disabled>Select a subcategory</option>
+                      {allOptions.map(sub => (
+                        <option key={sub} value={sub}>{sub}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input 
+                      value={form.subcategory} 
+                      onChange={e => setForm(f => ({ ...f, subcategory: e.target.value }))} 
+                      className={inputCls} 
+                      placeholder="e.g. T-Shirts" 
+                    />
+                  );
+                })()}
               </FormField>
             </div>
 
