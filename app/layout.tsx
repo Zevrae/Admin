@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { AuthProvider } from '../context/AuthContext';
+import { StoreProvider } from '../store/StoreProvider';
 import '../index.css';
 
 export const metadata: Metadata = {
@@ -13,7 +14,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <AuthProvider>
-          {children}
+          <StoreProvider>
+            {children}
+          </StoreProvider>
         </AuthProvider>
       </body>
     </html>

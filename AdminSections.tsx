@@ -25,6 +25,15 @@ import { ordersApi, Order } from './api/orders';
 import { analysisApi, AnalysisSummary } from './api/analysis';
 import RichTextEditor from './RichTextEditor';
 import { SectionHeader, Badge, Modal, FormField, Pagination, baseInputCls, inputCls, selectCls } from './components/AdminUI';
+import { useAppDispatch, useAppSelector } from './store/hooks';
+import {
+  DbProduct,
+  StockItem,
+  productToDbProduct,
+  fetchDbProductsThunk,
+  upsertProduct,
+  removeProduct,
+} from './store/slices/productsSlice';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -759,63 +768,10 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
   );
 }
 
-// ─── DB Product type ──────────────────────────────────────────────────────────
-
-interface StockItem {
-  size: string;
-  quantity: number;
-  _rowId?: number; 
-}
+// ─── DB Product helpers ──────────────────────────────────────────────────────────
 
 let rowIdCounter = 0;
 const nextRowId = () => ++rowIdCounter;
-
-interface DbProduct {
-  id: string;
-  name: string;
-  description: string;
-  collections: string[]; 
-  category: string;
-  subcategory: string;
-  price: number;
-  compare_price: number | null;
-  discount: number | null;
-  inventory_mode: 'size' | 'nosize';
-  stock_quantity: StockItem[];
-  in_stock: boolean;
-  images: string[];
-  status: string;
-  is_deleted?: boolean;
-  created_at: string;
-}
-
-function productToDbProduct(p: Product): DbProduct {
-  const sizeStock = p.size_stock || {};
-  const inventory_mode = p.inventory_mode || (p.sizes && p.sizes.length > 0 ? 'size' : 'nosize');
-  const sizes = p.sizes && p.sizes.length > 0 ? p.sizes : Object.keys(sizeStock);
-  const stock_quantity: StockItem[] = sizes.map(size => ({
-    size,
-    quantity: sizeStock[size] ?? 0,
-  }));
-  return {
-    id: p.id,
-    name: p.name,
-    description: p.description || '',
-    collections: p.collections || [],
-    category: p.category,
-    subcategory: p.subcategory,
-    price: p.price,
-    compare_price: p.compare_price ?? null,
-    discount: p.discount ?? null,
-    inventory_mode,
-    stock_quantity,
-    in_stock: stock_quantity.some(s => s.quantity > 0) || stock_quantity.length === 0,
-    images: p.images || [],
-    status: p.status,
-    is_deleted: p.is_deleted,
-    created_at: p.created_at,
-  };
-}
 
 function dbProductPayload(form: Omit<DbProduct, 'id' | 'created_at' | 'is_deleted'>): Partial<Product> {
   const sizes = form.inventory_mode === 'size'
@@ -895,9 +851,17 @@ const CATEGORY_MAP: Record<string, string[]> = {
 };
 
 export function ProductsSection() {
-  const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
-  const [dbLoading, setDbLoading] = useState(true);
-  const [dbError, setDbError] = useState('');
+  const dispatch = useAppDispatch();
+  const {
+    items: dbProducts,
+    loading: storeLoading,
+    isSyncing,
+    error: storeError,
+    lastFetched,
+  } = useAppSelector(state => state.products);
+
+  // Instant 0ms render: only show blocking loader if cache is completely empty
+  const dbLoading = storeLoading && dbProducts.length === 0;
 
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -942,47 +906,18 @@ export function ProductsSection() {
       });
   }, []);
 
-  const fetchDbProducts = useCallback(async () => {
-    setDbLoading(true);
-    setDbError('');
-    try {
-      let allProducts: DbProduct[] = [];
-      let currentPage = 1;
-      let hasMore = true;
-      const MAX_PAGES = 300;
-
-      while (hasMore && currentPage <= MAX_PAGES) {
-        const response: any = await productsApi.list({ limit: 100, page: currentPage });
-
-        const items = response?.data || [];
-        const pagination = response?.pagination;
-
-        if (items.length > 0) {
-          const mappedItems = items.map((item: any) => productToDbProduct(item));
-          allProducts = [...allProducts, ...mappedItems];
-        }
-
-        if (items.length === 0) {
-          hasMore = false;
-        } else if (pagination && typeof pagination.pages === 'number') {
-          hasMore = currentPage < pagination.pages;
-          currentPage++;
-        } else if (items.length < 100) {
-          hasMore = false;
-        } else {
-          hasMore = false;
-        }
-      }
-
-      setDbProducts(allProducts);
-    } catch (err: any) {
-      setDbError('Could not load products. Make sure the database is connected.');
-    } finally {
-      setDbLoading(false);
+  // Stale-While-Revalidate: fetch in background if empty or stale (> 3 minutes)
+  useEffect(() => {
+    const STALE_TIME = 3 * 60 * 1000;
+    const isStale = !lastFetched || (Date.now() - lastFetched > STALE_TIME);
+    if (dbProducts.length === 0 || isStale) {
+      dispatch(fetchDbProductsThunk());
     }
-  }, []);
+  }, [dispatch, dbProducts.length, lastFetched]);
 
-  useEffect(() => { fetchDbProducts(); }, [fetchDbProducts]);
+  const handleManualRefresh = useCallback(() => {
+    dispatch(fetchDbProductsThunk());
+  }, [dispatch]);
 
   const openAdd = () => {
     setEditingId(null);
@@ -1096,20 +1031,23 @@ export function ProductsSection() {
     try {
       const payload = dbProductPayload(form);
 
-      let productId = editingId;
+      let savedProduct: Product;
       if (editingId) {
-        await productsApi.update(editingId, payload);
+        savedProduct = await productsApi.update(editingId, payload);
       } else {
-        const created = await productsApi.create(payload);
-        productId = created.id;
+        savedProduct = await productsApi.create(payload);
       }
 
-      if (imageFiles.length > 0 && productId) {
-        await productsApi.uploadImages(productId, imageFiles);
+      if (imageFiles.length > 0 && savedProduct.id) {
+        savedProduct = await productsApi.uploadImages(savedProduct.id, imageFiles);
       }
+
+      // Optimistically update store with saved product
+      dispatch(upsertProduct(productToDbProduct(savedProduct)));
 
       setShowModal(false);
-      fetchDbProducts();
+      // Re-sync with backend in background
+      dispatch(fetchDbProductsThunk());
     } catch (err: any) {
       setFormError(err?.response?.data?.message || err.message || 'Save failed.');
     } finally {
@@ -1136,12 +1074,14 @@ export function ProductsSection() {
   const handleDelete = useCallback(async (id: string) => {
     if (!confirm('Soft delete this product? It will be removed from the active store views.')) return;
     try {
+      dispatch(removeProduct(id));
       await productsApi.remove(id);
-      fetchDbProducts();
+      dispatch(fetchDbProductsThunk());
     } catch (error: any) {
       alert('Delete failed: ' + (error?.response?.data?.message || error.message));
+      dispatch(fetchDbProductsThunk());
     }
-  }, [fetchDbProducts]);
+  }, [dispatch]);
 
   // 1. Memoize the table data to prevent infinite re-renders!
   const memoizedProducts = useMemo(() => {
@@ -1295,18 +1235,28 @@ export function ProductsSection() {
 
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-4">
-          <span className="text-[10px] uppercase tracking-[0.2em] font-sans text-[var(--theme-accent)]">Database Products</span>
+          <div className="flex items-center gap-2.5">
+            <span className="text-[10px] uppercase tracking-[0.2em] font-sans text-[var(--theme-accent)]">Database Products</span>
+            {isSyncing && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-sans text-[var(--theme-accent)]/80 bg-[var(--theme-accent)]/10 border border-[var(--theme-accent)]/20 rounded-sm">
+                <RefreshCw size={9} className="animate-spin" />
+                Syncing with backend...
+              </span>
+            )}
+          </div>
           <button
-            onClick={() => fetchDbProducts()}
-            className="ml-auto p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)]"
+            onClick={handleManualRefresh}
+            disabled={isSyncing}
+            title="Refresh products from server"
+            className="ml-auto p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)] disabled:opacity-50"
           >
-            <RefreshCw size={11} />
+            <RefreshCw size={11} className={isSyncing ? 'animate-spin text-[var(--theme-accent)]' : ''} />
           </button>
         </div>
 
-        {dbError && (
+        {storeError && (
           <div className="mb-4 p-3 text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.1)] border border-[rgba(var(--theme-accent-rgb),0.2)] text-[11px] font-sans rounded-sm flex items-center gap-2">
-            <AlertCircle size={14} /> {dbError}
+            <AlertCircle size={14} /> {storeError}
           </div>
         )}
 
@@ -1334,7 +1284,7 @@ export function ProductsSection() {
                 ) : table.getRowModel().rows.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="p-10 text-center text-[11px] font-sans text-[rgba(var(--theme-text-rgb),0.3)]">
-                      {search ? `No products matching "${search}".` : dbError ? 'Table not found.' : 'No products yet. Click "Add Product" to create one.'}
+                      {search ? `No products matching "${search}".` : storeError ? 'Table not found.' : 'No products yet. Click "Add Product" to create one.'}
                     </td>
                   </tr>
                 ) : (
