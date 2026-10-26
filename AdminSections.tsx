@@ -542,29 +542,29 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
     <div>
       <SectionHeader title="Orders" />
       <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 mb-5">
-        {/* Search & Date Filter controls */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-          {/* Reduced-width Search Bar */}
-          <div className="relative w-full sm:w-56 md:w-64">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[rgba(var(--theme-text-rgb),0.3)]" />
-            <input
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search orders..."
-              className="w-full bg-[var(--theme-surface)] border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm pl-9 pr-7 py-2.5 text-[12px] text-[var(--theme-text)] font-mono placeholder:text-[rgba(var(--theme-text-rgb),0.25)] focus:outline-none focus:border-[rgba(var(--theme-accent-rgb),0.4)] transition-colors"
-            />
-            {search && (
-              <button
-                type="button"
-                onClick={() => setSearch('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-text)] transition-colors"
-                title="Clear search"
-              >
-                <X size={12} />
-              </button>
-            )}
-          </div>
+        {/* Search Bar */}
+        <div className="relative w-full sm:w-56 md:w-64">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[rgba(var(--theme-text-rgb),0.3)]" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search orders..."
+            className="w-full bg-[var(--theme-surface)] border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm pl-9 pr-7 py-2.5 text-[12px] text-[var(--theme-text)] font-mono placeholder:text-[rgba(var(--theme-text-rgb),0.25)] focus:outline-none focus:border-[rgba(var(--theme-accent-rgb),0.4)] transition-colors"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-text)] transition-colors"
+              title="Clear search"
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
 
+        {/* Date Filter & Status Filter Pills */}
+        <div className="flex flex-wrap items-center gap-2.5">
           {/* Calendar Date Filter */}
           <div className={`relative flex items-center bg-[var(--theme-surface)] border rounded-sm px-2.5 py-1.5 transition-colors ${
             selectedDate 
@@ -591,24 +591,24 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
               </button>
             )}
           </div>
-        </div>
 
-        {/* Status Filter Pills */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          {['All', 'Pending', 'Paid', 'COD', 'Delivered', 'Custom'].map(f => (
-            <button
-              key={f}
-              type="button"
-              onClick={() => setFilter(f)}
-              className={`px-3 py-2 text-[9px] uppercase tracking-[0.12em] font-sans rounded-sm transition-all duration-200 ${
-                filter === f
-                  ? 'bg-[var(--theme-accent)] text-[var(--theme-bg)] font-semibold shadow-sm'
-                  : 'bg-[var(--theme-surface)] text-[rgba(var(--theme-text-rgb),0.5)] border border-[rgba(var(--theme-text-rgb),0.1)] hover:border-[rgba(var(--theme-accent-rgb),0.3)] hover:text-[var(--theme-accent)]'
-              }`}
-            >
-              {f}
-            </button>
-          ))}
+          {/* Status Filter Pills */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {['All', 'Pending', 'Paid', 'COD', 'Delivered', 'Custom'].map(f => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setFilter(f)}
+                className={`px-3 py-2 text-[9px] uppercase tracking-[0.12em] font-sans rounded-sm transition-all duration-200 ${
+                  filter === f
+                    ? 'bg-[var(--theme-accent)] text-[var(--theme-bg)] font-semibold shadow-sm'
+                    : 'bg-[var(--theme-surface)] text-[rgba(var(--theme-text-rgb),0.5)] border border-[rgba(var(--theme-text-rgb),0.1)] hover:border-[rgba(var(--theme-accent-rgb),0.3)] hover:text-[var(--theme-accent)]'
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       {errorMsg && (
