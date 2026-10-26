@@ -12,14 +12,19 @@ export function SectionHeader({
   title,
   action,
   onAction,
+  extra,
 }: {
   title: string;
   action?: string;
   onAction?: () => void;
+  extra?: React.ReactNode;
 }) {
   return (
     <div className="flex items-center justify-between mb-6">
-      <h2 className="text-[13px] uppercase tracking-[0.2em] font-sans text-[var(--theme-text)]">{title}</h2>
+      <div className="flex items-center gap-3">
+        <h2 className="text-[13px] uppercase tracking-[0.2em] font-sans text-[var(--theme-text)]">{title}</h2>
+        {extra}
+      </div>
       {action && (
         <button
           onClick={onAction}

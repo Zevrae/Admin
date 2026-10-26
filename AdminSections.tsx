@@ -34,6 +34,24 @@ import {
   upsertProduct,
   removeProduct,
 } from './store/slices/productsSlice';
+import {
+  fetchCollectionsThunk,
+  upsertCollection,
+  removeCollection,
+  toggleCollectionFeaturedLocally,
+} from './store/slices/collectionsSlice';
+import {
+  fetchCategoriesThunk,
+  upsertCategory,
+  removeCategory,
+} from './store/slices/categoriesSlice';
+import {
+  fetchDiscountsThunk,
+  upsertDiscount,
+  removeDiscount,
+  toggleDiscountStatusLocally,
+} from './store/slices/discountsSlice';
+import { fetchAnalysisThunk } from './store/slices/analysisSlice';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -1587,42 +1605,37 @@ export function ProductsSection() {
 // ─── Collections Section ──────────────────────────────────────────────────────
 
 export function CollectionsSection() {
-  const [collections, setCollections] = useState<Collection[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [productCounts, setProductCounts] = useState<Record<string, number>>({});
+  const dispatch = useAppDispatch();
+  const {
+    collections,
+    productCounts,
+    loading: storeLoading,
+    isSyncing,
+    error: storeError,
+    lastFetched,
+  } = useAppSelector(state => state.collections);
+
+  // Instant render: only show blocking loader if cache has 0 items
+  const loading = storeLoading && collections.length === 0;
+
   const [showModal, setShowModal] = useState(false);
   const [editingCol, setEditingCol] = useState<Collection | null>(null);
   const [form, setForm] = useState({ name: '', description: '', status: 'active', featured: false });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
-  const fetchCollections = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const { data } = await collectionsApi.list();
-      setCollections(data || []);
-      const counts: Record<string, number> = {};
-      await Promise.all(
-        (data || []).map(async (c) => {
-          try {
-            const res = await productsApi.list({ collection: c.id, limit: 1 });
-            counts[c.id] = res.pagination.total;
-          } catch {
-            counts[c.id] = 0;
-          }
-        })
-      );
-      setProductCounts(counts);
-    } catch (err: any) {
-      setError('Could not load collections. Make sure the backend is reachable.');
-    } finally {
-      setLoading(false);
+  // Stale-While-Revalidate: fetch in background if empty or stale (> 3 minutes)
+  useEffect(() => {
+    const STALE_TIME = 3 * 60 * 1000;
+    const isStale = !lastFetched || Date.now() - lastFetched > STALE_TIME;
+    if (collections.length === 0 || isStale) {
+      dispatch(fetchCollectionsThunk());
     }
-  };
+  }, [dispatch, collections.length, lastFetched]);
 
-  useEffect(() => { fetchCollections(); }, []);
+  const handleManualRefresh = useCallback(() => {
+    dispatch(fetchCollectionsThunk());
+  }, [dispatch]);
 
   const openAdd = () => { setEditingCol(null); setForm({ name: '', description: '', status: 'active', featured: false }); setFormError(''); setShowModal(true); };
   
@@ -1638,13 +1651,15 @@ export function CollectionsSection() {
     setSaving(true);
     setFormError('');
     try {
+      let saved: Collection;
       if (editingCol) {
-        await collectionsApi.update(editingCol.id, form);
+        saved = await collectionsApi.update(editingCol.id, form);
       } else {
-        await collectionsApi.create(form);
+        saved = await collectionsApi.create(form);
       }
+      dispatch(upsertCollection(saved));
       setShowModal(false);
-      fetchCollections();
+      dispatch(fetchCollectionsThunk());
     } catch (err: any) {
       setFormError(err?.response?.data?.message || err.message || 'Save failed.');
     } finally {
@@ -1655,21 +1670,25 @@ export function CollectionsSection() {
   const handleDelete = useCallback(async (id: string) => {
     if (!confirm('Remove this collection?')) return;
     try {
+      dispatch(removeCollection(id));
       await collectionsApi.remove(id);
-      fetchCollections();
+      dispatch(fetchCollectionsThunk());
     } catch (err: any) {
       alert('Delete failed: ' + (err?.response?.data?.message || err.message));
+      dispatch(fetchCollectionsThunk());
     }
-  }, []);
+  }, [dispatch]);
 
   const toggleFeatured = useCallback(async (c: Collection) => {
     try {
+      dispatch(toggleCollectionFeaturedLocally(c.id));
       await collectionsApi.update(c.id, { featured: !c.featured });
-      fetchCollections();
+      dispatch(fetchCollectionsThunk());
     } catch (err: any) {
       alert('Update failed: ' + (err?.response?.data?.message || err.message));
+      dispatch(fetchCollectionsThunk());
     }
-  }, []);
+  }, [dispatch]);
 
   // 1. Memoize Data to prevent infinite re-renders!
   const memoizedCollections = useMemo(() => collections, [collections]);
@@ -1734,12 +1753,34 @@ export function CollectionsSection() {
 
   return (
     <div>
-      <SectionHeader title="Collections" action="New Collection" onAction={openAdd} />
+      <SectionHeader
+        title="Collections"
+        action="New Collection"
+        onAction={openAdd}
+        extra={
+          <div className="flex items-center gap-2">
+            {isSyncing && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-sans text-[var(--theme-accent)]/80 bg-[var(--theme-accent)]/10 border border-[var(--theme-accent)]/20 rounded-sm">
+                <RefreshCw size={9} className="animate-spin" />
+                Syncing...
+              </span>
+            )}
+            <button
+              onClick={handleManualRefresh}
+              disabled={isSyncing}
+              title="Refresh collections from server"
+              className="p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)] disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={isSyncing ? 'animate-spin text-[var(--theme-accent)]' : ''} />
+            </button>
+          </div>
+        }
+      />
       <p className="text-[11px] text-[rgba(var(--theme-text-rgb),0.4)] font-sans mb-5">Group products into curated collections for seasonal drops and editorial features.</p>
 
-      {error && (
+      {storeError && (
         <div className="mb-4 p-3 text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.1)] border border-[rgba(var(--theme-accent-rgb),0.2)] text-[11px] font-sans rounded-sm flex items-center gap-2">
-          <AlertCircle size={14} /> {error}
+          <AlertCircle size={14} /> {storeError}
         </div>
       )}
 
@@ -1825,42 +1866,37 @@ export function CollectionsSection() {
 // ─── Categories Section ───────────────────────────────────────────────────────
 
 export function CategoriesSection() {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [productCounts, setProductCounts] = useState<Record<string, number>>({});
+  const dispatch = useAppDispatch();
+  const {
+    categories,
+    productCounts,
+    loading: storeLoading,
+    isSyncing,
+    error: storeError,
+    lastFetched,
+  } = useAppSelector(state => state.categories);
+
+  // Instant render: only show blocking loader if cache has 0 items
+  const loading = storeLoading && categories.length === 0;
+
   const [showModal, setShowModal] = useState(false);
   const [editingCat, setEditingCat] = useState<Category | null>(null);
   const [form, setForm] = useState({ name: '', description: '', parent: '', status: 'active' });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
-  const fetchCategories = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const { data } = await categoriesApi.list();
-      setCategories(data || []);
-      const counts: Record<string, number> = {};
-      await Promise.all(
-        (data || []).map(async (c) => {
-          try {
-            const res = await productsApi.list({ category: c.name, limit: 1 });
-            counts[c.id] = res.pagination.total;
-          } catch {
-            counts[c.id] = 0;
-          }
-        })
-      );
-      setProductCounts(counts);
-    } catch (err: any) {
-      setError('Could not load categories. Make sure the backend is reachable.');
-    } finally {
-      setLoading(false);
+  // Stale-While-Revalidate: fetch in background if empty or stale (> 3 minutes)
+  useEffect(() => {
+    const STALE_TIME = 3 * 60 * 1000;
+    const isStale = !lastFetched || Date.now() - lastFetched > STALE_TIME;
+    if (categories.length === 0 || isStale) {
+      dispatch(fetchCategoriesThunk());
     }
-  };
+  }, [dispatch, categories.length, lastFetched]);
 
-  useEffect(() => { fetchCategories(); }, []);
+  const handleManualRefresh = useCallback(() => {
+    dispatch(fetchCategoriesThunk());
+  }, [dispatch]);
 
   const openAdd = useCallback((parentId?: string) => {
     setEditingCat(null);
@@ -1883,13 +1919,15 @@ export function CategoriesSection() {
     setFormError('');
     try {
       const payload = { name: form.name, description: form.description, parent: form.parent || null, status: form.status };
+      let saved: Category;
       if (editingCat) {
-        await categoriesApi.update(editingCat.id, payload);
+        saved = await categoriesApi.update(editingCat.id, payload);
       } else {
-        await categoriesApi.create(payload);
+        saved = await categoriesApi.create(payload);
       }
+      dispatch(upsertCategory(saved));
       setShowModal(false);
-      fetchCategories();
+      dispatch(fetchCategoriesThunk());
     } catch (err: any) {
       setFormError(err?.response?.data?.message || err.message || 'Save failed.');
     } finally {
@@ -1900,12 +1938,14 @@ export function CategoriesSection() {
   const handleDelete = useCallback(async (id: string) => {
     if (!confirm('Remove this category? Any subcategories under it will need to be reassigned separately.')) return;
     try {
+      dispatch(removeCategory(id));
       await categoriesApi.remove(id);
-      fetchCategories();
+      dispatch(fetchCategoriesThunk());
     } catch (err: any) {
       alert('Delete failed: ' + (err?.response?.data?.message || err.message));
+      dispatch(fetchCategoriesThunk());
     }
-  }, []);
+  }, [dispatch]);
 
   // 1. Memoize Data to prevent infinite re-renders!
   const memoizedTopLevel = useMemo(() => categories.filter(c => !c.parent), [categories]);
@@ -1985,12 +2025,34 @@ export function CategoriesSection() {
 
   return (
     <div>
-      <SectionHeader title="Categories" action="New Category" onAction={() => openAdd()} />
+      <SectionHeader
+        title="Categories"
+        action="New Category"
+        onAction={() => openAdd()}
+        extra={
+          <div className="flex items-center gap-2">
+            {isSyncing && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-sans text-[var(--theme-accent)]/80 bg-[var(--theme-accent)]/10 border border-[var(--theme-accent)]/20 rounded-sm">
+                <RefreshCw size={9} className="animate-spin" />
+                Syncing...
+              </span>
+            )}
+            <button
+              onClick={handleManualRefresh}
+              disabled={isSyncing}
+              title="Refresh categories from server"
+              className="p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)] disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={isSyncing ? 'animate-spin text-[var(--theme-accent)]' : ''} />
+            </button>
+          </div>
+        }
+      />
       <p className="text-[11px] text-[rgba(var(--theme-text-rgb),0.4)] font-sans mb-5">Manage top-level categories and their subcategories that appear in navigation.</p>
 
-      {error && (
+      {storeError && (
         <div className="mb-4 p-3 text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.1)] border border-[rgba(var(--theme-accent-rgb),0.2)] text-[11px] font-sans rounded-sm flex items-center gap-2">
-          <AlertCircle size={14} /> {error}
+          <AlertCircle size={14} /> {storeError}
         </div>
       )}
 
@@ -2075,29 +2137,36 @@ export function CategoriesSection() {
 // ─── Discounts Section ────────────────────────────────────────────────────────
 
 export function DiscountsSection() {
-  const [discounts, setDiscounts] = useState<Discount[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const dispatch = useAppDispatch();
+  const {
+    discounts,
+    loading: storeLoading,
+    isSyncing,
+    error: storeError,
+    lastFetched,
+  } = useAppSelector(state => state.discounts);
+
+  // Instant render: only show blocking loader if cache has 0 items
+  const loading = storeLoading && discounts.length === 0;
+
   const [showModal, setShowModal] = useState(false);
   const [editingDiscount, setEditingDiscount] = useState<Discount | null>(null);
   const [form, setForm] = useState({ code: '', type: 'Percentage', value: '', limit_type: 'uses' as 'uses' | 'time', limit: '', expiry: '', status: 'Active' });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
-  const fetchDiscounts = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const data = await discountsApi.list();
-      setDiscounts(data || []);
-    } catch (err: any) {
-      setError('Could not load discounts. Make sure the backend is reachable.');
-    } finally {
-      setLoading(false);
+  // Stale-While-Revalidate: fetch in background if empty or stale (> 3 minutes)
+  useEffect(() => {
+    const STALE_TIME = 3 * 60 * 1000;
+    const isStale = !lastFetched || Date.now() - lastFetched > STALE_TIME;
+    if (discounts.length === 0 || isStale) {
+      dispatch(fetchDiscountsThunk());
     }
-  };
+  }, [dispatch, discounts.length, lastFetched]);
 
-  useEffect(() => { fetchDiscounts(); }, []);
+  const handleManualRefresh = useCallback(() => {
+    dispatch(fetchDiscountsThunk());
+  }, [dispatch]);
 
   const openAdd = () => {
     setEditingDiscount(null);
@@ -2130,8 +2199,9 @@ export function DiscountsSection() {
     setSaving(true);
     setFormError('');
     try {
+      let saved: Discount;
       if (editingDiscount) {
-        await discountsApi.update(editingDiscount.id, {
+        saved = await discountsApi.update(editingDiscount.id, {
           type: form.type as Discount['type'],
           value: Number(form.value),
           limit_type: form.limit_type,
@@ -2140,7 +2210,7 @@ export function DiscountsSection() {
           status: form.status as Discount['status'],
         });
       } else {
-        await discountsApi.create({
+        saved = await discountsApi.create({
           code: formattedCode,
           type: form.type as Discount['type'],
           value: Number(form.value),
@@ -2150,8 +2220,9 @@ export function DiscountsSection() {
           status: form.status as Discount['status'],
         });
       }
+      dispatch(upsertDiscount(saved));
       setShowModal(false);
-      fetchDiscounts();
+      dispatch(fetchDiscountsThunk());
     } catch (err: any) {
       const msg = err?.response?.data?.message || err.message || 'Save failed.';
       if (msg.toLowerCase().includes('duplicate')) {
@@ -2167,21 +2238,25 @@ export function DiscountsSection() {
   const handleDelete = useCallback(async (id: string) => {
     if (!confirm('Remove this discount?')) return;
     try {
+      dispatch(removeDiscount(id));
       await discountsApi.remove(id);
-      fetchDiscounts();
+      dispatch(fetchDiscountsThunk());
     } catch (err: any) {
       alert('Delete failed: ' + (err?.response?.data?.message || err.message));
+      dispatch(fetchDiscountsThunk());
     }
-  }, []);
+  }, [dispatch]);
 
   const toggleStatus = useCallback(async (d: Discount) => {
     try {
+      dispatch(toggleDiscountStatusLocally(d.id));
       await discountsApi.update(d.id, { status: d.status === 'Active' ? 'Expired' : 'Active' });
-      fetchDiscounts();
+      dispatch(fetchDiscountsThunk());
     } catch (err: any) {
       alert('Update failed: ' + (err?.response?.data?.message || err.message));
+      dispatch(fetchDiscountsThunk());
     }
-  }, []);
+  }, [dispatch]);
 
   // 1. Memoize Data to prevent infinite re-renders!
   const memoizedDiscounts = useMemo(() => discounts, [discounts]);
@@ -2273,12 +2348,34 @@ export function DiscountsSection() {
 
   return (
     <div>
-      <SectionHeader title="Discounts & Coupons" action="New Coupon" onAction={openAdd} />
+      <SectionHeader
+        title="Discounts & Coupons"
+        action="New Coupon"
+        onAction={openAdd}
+        extra={
+          <div className="flex items-center gap-2">
+            {isSyncing && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-sans text-[var(--theme-accent)]/80 bg-[var(--theme-accent)]/10 border border-[var(--theme-accent)]/20 rounded-sm">
+                <RefreshCw size={9} className="animate-spin" />
+                Syncing...
+              </span>
+            )}
+            <button
+              onClick={handleManualRefresh}
+              disabled={isSyncing}
+              title="Refresh discounts from server"
+              className="p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)] disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={isSyncing ? 'animate-spin text-[var(--theme-accent)]' : ''} />
+            </button>
+          </div>
+        }
+      />
       <p className="text-[11px] text-[rgba(var(--theme-text-rgb),0.4)] font-sans mb-5">Create coupon codes for promotions and customer loyalty programs.</p>
 
-      {error && (
+      {storeError && (
         <div className="mb-4 p-3 text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.1)] border border-[rgba(var(--theme-accent-rgb),0.2)] text-[11px] font-sans rounded-sm flex items-center gap-2">
-          <AlertCircle size={14} /> {error}
+          <AlertCircle size={14} /> {storeError}
         </div>
       )}
 
@@ -2389,24 +2486,30 @@ export function DiscountsSection() {
 // ─── Analysis (Demand Insights) ──────────────────────────────────────────────
 
 export function AnalysisSection() {
-  const [summary, setSummary] = useState<AnalysisSummary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const dispatch = useAppDispatch();
+  const {
+    summary,
+    loading: storeLoading,
+    isSyncing,
+    error: storeError,
+    lastFetched,
+  } = useAppSelector(state => state.analysis);
 
-  const fetchSummary = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const data = await analysisApi.summary();
-      setSummary(data);
-    } catch (err: any) {
-      setError('Could not load demand analytics. Make sure the backend is reachable.');
-    } finally {
-      setLoading(false);
+  // Instant render: only show full blocking loading if cache is empty
+  const loading = storeLoading && summary === null;
+
+  // Stale-While-Revalidate: fetch in background if empty or stale (> 3 minutes)
+  useEffect(() => {
+    const STALE_TIME = 3 * 60 * 1000;
+    const isStale = !lastFetched || Date.now() - lastFetched > STALE_TIME;
+    if (summary === null || isStale) {
+      dispatch(fetchAnalysisThunk());
     }
-  };
+  }, [dispatch, summary, lastFetched]);
 
-  useEffect(() => { fetchSummary(); }, []);
+  const handleManualRefresh = useCallback(() => {
+    dispatch(fetchAnalysisThunk());
+  }, [dispatch]);
 
   const productImage = (p: { images: string[] } | null) => p?.images?.[0] || '';
 
@@ -2421,14 +2524,34 @@ export function AnalysisSection() {
 
   return (
     <div>
-      <SectionHeader title="Analysis" />
+      <SectionHeader
+        title="Analysis"
+        extra={
+          <div className="flex items-center gap-2">
+            {isSyncing && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-sans text-[var(--theme-accent)]/80 bg-[var(--theme-accent)]/10 border border-[var(--theme-accent)]/20 rounded-sm">
+                <RefreshCw size={9} className="animate-spin" />
+                Syncing...
+              </span>
+            )}
+            <button
+              onClick={handleManualRefresh}
+              disabled={isSyncing}
+              title="Refresh analysis from server"
+              className="p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)] disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={isSyncing ? 'animate-spin text-[var(--theme-accent)]' : ''} />
+            </button>
+          </div>
+        }
+      />
       <p className="text-[11px] text-[rgba(var(--theme-text-rgb),0.4)] font-sans mb-6">
         Demand signals across the catalog — units ordered, plus "notify me" signups on items people wanted but couldn't buy.
       </p>
 
-      {error && (
+      {storeError && (
         <div className="mb-5 p-3 text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.1)] border border-[rgba(var(--theme-accent-rgb),0.2)] text-[11px] font-sans rounded-sm flex items-center gap-2">
-          <AlertCircle size={14} /> {error}
+          <AlertCircle size={14} /> {storeError}
         </div>
       )}
 
