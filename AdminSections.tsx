@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import NextImage from 'next/image';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -7,12 +7,13 @@ import {
   Tag, Percent, Plus, Edit2, Trash2,
   Search, X, Image, ToggleLeft, ToggleRight,
   Star, AlertCircle, TrendingUp, Users, ArrowUpRight,
-  Save, Upload, RefreshCw, Bell, BarChart3, CalendarClock,
+  Save, Upload, RefreshCw, Bell, BarChart3, CalendarClock, Calendar,
   Download, Paintbrush,
 } from 'lucide-react';
 import {
   useReactTable,
   getCoreRowModel,
+  getPaginationRowModel,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table';
@@ -23,7 +24,7 @@ import { discountsApi, Discount } from './api/discounts';
 import { ordersApi, Order } from './api/orders';
 import { analysisApi, AnalysisSummary } from './api/analysis';
 import RichTextEditor from './RichTextEditor';
-import { SectionHeader, Badge, Modal, FormField, baseInputCls, inputCls, selectCls } from './components/AdminUI';
+import { SectionHeader, Badge, Modal, FormField, Pagination, baseInputCls, inputCls, selectCls } from './components/AdminUI';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -316,6 +317,7 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
   const [filter, setFilter] = useState('All');
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [selectedDate, setSelectedDate] = useState('');
 
   // 1. Memoize the table data to prevent infinite re-renders!
   const memoizedOrders = useMemo(() => {
@@ -332,9 +334,53 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
         (customer?.name || '').toLowerCase().includes(search.toLowerCase()) ||
         o.id.toLowerCase().includes(search.toLowerCase()) ||
         (customer?.email || '').toLowerCase().includes(search.toLowerCase());
-      return matchFilter && matchSearch;
+
+      const matchDate = !selectedDate || (() => {
+        if (!o.created_at) return false;
+        const d = new Date(o.created_at);
+        if (isNaN(d.getTime())) return false;
+
+        // 1. Browser local date (YYYY-MM-DD)
+        const localY = d.getFullYear();
+        const localM = String(d.getMonth() + 1).padStart(2, '0');
+        const localD = String(d.getDate()).padStart(2, '0');
+        const localStr = `${localY}-${localM}-${localD}`;
+        if (localStr === selectedDate) return true;
+
+        // 2. Indian Standard Time (IST / Asia/Kolkata) date
+        try {
+          const istStr = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+          if (istStr === selectedDate) return true;
+        } catch (_) {}
+
+        // 3. UTC date
+        try {
+          const utcStr = d.toISOString().slice(0, 10);
+          if (utcStr === selectedDate) return true;
+        } catch (_) {}
+
+        // 4. Inverted MM/DD vs DD/MM fallback (e.g. 2026-08-10 vs 2026-10-08)
+        const parts = selectedDate.split('-');
+        if (parts.length === 3) {
+          const [y, m, day] = parts;
+          if (Number(m) <= 12 && Number(day) <= 12) {
+            const inverted = `${y}-${day}-${m}`;
+            if (localStr === inverted) return true;
+            try {
+              if (d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) === inverted) return true;
+            } catch (_) {}
+            try {
+              if (d.toISOString().slice(0, 10) === inverted) return true;
+            } catch (_) {}
+          }
+        }
+
+        return false;
+      })();
+
+      return matchFilter && matchSearch && matchDate;
     });
-  }, [orders, filter, search]);
+  }, [orders, filter, search, selectedDate]);
 
   const orderStatusColor = (s?: string) => {
     switch (s) {
@@ -426,34 +472,110 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
     })
   ], []);
 
+  const [pagination, setPagination] = useState({
+    pageIndex: 0,
+    pageSize: 10,
+  });
+
+  // Only reset to first page when search query, filter, or date explicitly changes
+  const prevFilterRef = useRef(filter);
+  const prevSearchRef = useRef(search);
+  const prevDateRef = useRef(selectedDate);
+  useEffect(() => {
+    if (prevFilterRef.current !== filter || prevSearchRef.current !== search || prevDateRef.current !== selectedDate) {
+      prevFilterRef.current = filter;
+      prevSearchRef.current = search;
+      prevDateRef.current = selectedDate;
+      setPagination(prev => ({ ...prev, pageIndex: 0 }));
+    }
+  }, [search, filter, selectedDate]);
+
   const table = useReactTable({
     data: memoizedOrders,
     columns,
+    state: {
+      pagination,
+    },
+    onPaginationChange: setPagination,
+    autoResetPageIndex: false,
     getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
     getRowId: row => row.id,
   });
+
+  // Safely clamp page index if orders count shrinks below current page
+  const totalPages = Math.max(1, Math.ceil(memoizedOrders.length / pagination.pageSize));
+  useEffect(() => {
+    if (pagination.pageIndex >= totalPages) {
+      setPagination(prev => ({ ...prev, pageIndex: totalPages - 1 }));
+    }
+  }, [totalPages, pagination.pageIndex]);
 
   return (
     <div>
       <SectionHeader title="Orders" />
-      <div className="flex flex-col sm:flex-row gap-3 mb-5">
-        <div className="relative flex-1">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[rgba(var(--theme-text-rgb),0.3)]" />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search orders, customers..."
-            className="w-full bg-[var(--theme-surface)] border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm pl-9 pr-4 py-2.5 text-[12px] text-[var(--theme-text)] font-mono placeholder:text-[rgba(var(--theme-text-rgb),0.2)] focus:outline-none focus:border-[rgba(var(--theme-accent-rgb),0.3)] transition-colors"
-          />
+      <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 mb-5">
+        {/* Search & Date Filter controls */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+          {/* Reduced-width Search Bar */}
+          <div className="relative w-full sm:w-56 md:w-64">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[rgba(var(--theme-text-rgb),0.3)]" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search orders..."
+              className="w-full bg-[var(--theme-surface)] border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm pl-9 pr-7 py-2.5 text-[12px] text-[var(--theme-text)] font-mono placeholder:text-[rgba(var(--theme-text-rgb),0.25)] focus:outline-none focus:border-[rgba(var(--theme-accent-rgb),0.4)] transition-colors"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-text)] transition-colors"
+                title="Clear search"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+
+          {/* Calendar Date Filter */}
+          <div className={`relative flex items-center bg-[var(--theme-surface)] border rounded-sm px-2.5 py-1.5 transition-colors ${
+            selectedDate 
+              ? 'border-[var(--theme-accent)] text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.06)]' 
+              : 'border-[rgba(var(--theme-text-rgb),0.1)] text-[rgba(var(--theme-text-rgb),0.5)] hover:border-[rgba(var(--theme-text-rgb),0.25)]'
+          }`}>
+            <Calendar size={13} className={`mr-2 flex-shrink-0 ${selectedDate ? 'text-[var(--theme-accent)]' : 'text-[rgba(var(--theme-text-rgb),0.35)]'}`} />
+            <span className="text-[10px] uppercase tracking-wider text-[rgba(var(--theme-text-rgb),0.4)] mr-1.5 hidden sm:inline">Date:</span>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={e => setSelectedDate(e.target.value)}
+              aria-label="Filter by order date"
+              className="bg-transparent text-[11px] font-mono text-[var(--theme-text)] focus:outline-none cursor-pointer [color-scheme:dark]"
+            />
+            {selectedDate && (
+              <button
+                type="button"
+                onClick={() => setSelectedDate('')}
+                className="ml-2 text-[rgba(var(--theme-text-rgb),0.4)] hover:text-red-400 transition-colors"
+                title="Clear date filter"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
         </div>
-        <div className="flex flex-wrap gap-2">
+
+        {/* Status Filter Pills */}
+        <div className="flex flex-wrap items-center gap-1.5">
           {['All', 'Pending', 'Paid', 'COD', 'Delivered', 'Custom'].map(f => (
             <button
               key={f}
+              type="button"
               onClick={() => setFilter(f)}
-              className={`px-4 py-2 text-[9px] uppercase tracking-[0.15em] font-sans rounded-sm transition-all duration-200 ${
+              className={`px-3 py-2 text-[9px] uppercase tracking-[0.12em] font-sans rounded-sm transition-all duration-200 ${
                 filter === f
-                  ? 'bg-[var(--theme-accent)] text-[var(--theme-bg)]'
+                  ? 'bg-[var(--theme-accent)] text-[var(--theme-bg)] font-semibold shadow-sm'
                   : 'bg-[var(--theme-surface)] text-[rgba(var(--theme-text-rgb),0.5)] border border-[rgba(var(--theme-text-rgb),0.1)] hover:border-[rgba(var(--theme-accent-rgb),0.3)] hover:text-[var(--theme-accent)]'
               }`}
             >
@@ -490,8 +612,8 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
                 </tr>
               ) : table.getRowModel().rows.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-10 text-center text-[11px] uppercase tracking-[0.2em] font-sans text-[rgba(var(--theme-text-rgb),0.3)]">
-                    No orders found.
+                  <td colSpan={7} className="p-10 text-center text-[11px] font-sans text-[rgba(var(--theme-text-rgb),0.3)]">
+                    {search || filter !== 'All' || selectedDate ? 'No matching orders found.' : 'No orders found.'}
                   </td>
                 </tr>
               ) : (
@@ -618,6 +740,20 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
             </tbody>
           </table>
         </div>
+
+        <Pagination
+          currentPage={table.getState().pagination.pageIndex + 1}
+          totalPages={table.getPageCount()}
+          totalItems={memoizedOrders.length}
+          pageSize={table.getState().pagination.pageSize}
+          pageSizeOptions={[10, 20, 50, 100]}
+          onPageChange={page => table.setPageIndex(page - 1)}
+          onPageSizeChange={size => {
+            table.setPageSize(size);
+            table.setPageIndex(0);
+          }}
+          itemLabel="orders"
+        />
       </div>
     </div>
   );
@@ -1108,12 +1244,40 @@ export function ProductsSection() {
     })
   ], [openEdit, handleDelete]);
 
+  const [pagination, setPagination] = useState({
+    pageIndex: 0,
+    pageSize: 10,
+  });
+
+  // Only reset to first page when search query explicitly changes
+  const prevSearchRef = useRef(search);
+  useEffect(() => {
+    if (prevSearchRef.current !== search) {
+      prevSearchRef.current = search;
+      setPagination(prev => ({ ...prev, pageIndex: 0 }));
+    }
+  }, [search]);
+
   const table = useReactTable({
     data: memoizedProducts,
     columns,
+    state: {
+      pagination,
+    },
+    onPaginationChange: setPagination,
+    autoResetPageIndex: false,
     getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
     getRowId: row => row.id,
   });
+
+  // Safely clamp page index if products count shrinks below current page
+  const totalPages = Math.max(1, Math.ceil(memoizedProducts.length / pagination.pageSize));
+  useEffect(() => {
+    if (pagination.pageIndex >= totalPages) {
+      setPagination(prev => ({ ...prev, pageIndex: totalPages - 1 }));
+    }
+  }, [totalPages, pagination.pageIndex]);
 
   return (
     <div>
@@ -1170,7 +1334,7 @@ export function ProductsSection() {
                 ) : table.getRowModel().rows.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="p-10 text-center text-[11px] font-sans text-[rgba(var(--theme-text-rgb),0.3)]">
-                      {dbError ? 'Table not found.' : 'No products yet. Click "Add Product" to create one.'}
+                      {search ? `No products matching "${search}".` : dbError ? 'Table not found.' : 'No products yet. Click "Add Product" to create one.'}
                     </td>
                   </tr>
                 ) : (
@@ -1187,6 +1351,20 @@ export function ProductsSection() {
               </tbody>
             </table>
           </div>
+
+          <Pagination
+            currentPage={table.getState().pagination.pageIndex + 1}
+            totalPages={table.getPageCount()}
+            totalItems={memoizedProducts.length}
+            pageSize={table.getState().pagination.pageSize}
+            pageSizeOptions={[10, 20, 50, 100]}
+            onPageChange={page => table.setPageIndex(page - 1)}
+            onPageSizeChange={size => {
+              table.setPageSize(size);
+              table.setPageIndex(0);
+            }}
+            itemLabel="products"
+          />
         </div>
       </div>
 

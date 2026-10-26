@@ -122,8 +122,33 @@ export default function AdminLayout() {
   const fetchOrders = async (showLoader = true) => {
     if (showLoader) setLoading(true);
     try {
-      const { data } = await ordersApi.list({ limit: 100 });
-      setOrders(data);
+      let allOrders: Order[] = [];
+      let currentPage = 1;
+      let hasMore = true;
+      const MAX_PAGES = 50;
+
+      while (hasMore && currentPage <= MAX_PAGES) {
+        const response: any = await ordersApi.list({ limit: 100, page: currentPage });
+        const items = response?.data || [];
+        const pagination = response?.pagination;
+
+        if (items.length > 0) {
+          allOrders = [...allOrders, ...items];
+        }
+
+        if (items.length === 0) {
+          hasMore = false;
+        } else if (pagination && typeof pagination.pages === 'number') {
+          hasMore = currentPage < pagination.pages;
+          currentPage++;
+        } else if (items.length < 100) {
+          hasMore = false;
+        } else {
+          hasMore = false;
+        }
+      }
+
+      setOrders(allOrders);
       setErrorMsg('');
     } catch (err: any) {
       if (orders.length === 0) setErrorMsg('Could not load orders. Make sure the backend is reachable.');
