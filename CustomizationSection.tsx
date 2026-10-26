@@ -3,6 +3,12 @@ import Image from 'next/image';
 import { Plus, Edit2, Trash2, Upload, Save, X, RefreshCw, Palette, AlertTriangle } from 'lucide-react';
 import { customizableGarmentsApi, CustomizableGarment, GarmentColor } from './api/customization';
 import { SectionHeader, FormField, Modal, inputCls, selectCls, baseInputCls } from './components/AdminUI';
+import { useAppDispatch, useAppSelector } from './store/hooks';
+import {
+  fetchGarmentsThunk,
+  upsertGarment,
+  removeGarment,
+} from './store/slices/customizationSlice';
 
 // Turns any axios/JS error into a message that always includes enough to
 // diagnose it from a screenshot (status code + backend message when present)
@@ -58,9 +64,17 @@ const formatVal = (val: number) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(val);
 
 export function CustomizationSection() {
-  const [garments, setGarments] = useState<CustomizableGarment[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const dispatch = useAppDispatch();
+  const {
+    garments,
+    loading: storeLoading,
+    isSyncing,
+    error: storeError,
+    lastFetched,
+  } = useAppSelector((state) => state.customization);
+
+  // Instant render: only show full blocking loading state if we have 0 cached garments
+  const loading = storeLoading && garments.length === 0;
 
   const [showGarmentModal, setShowGarmentModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -70,20 +84,18 @@ export function CustomizationSection() {
 
   const [colorsGarmentId, setColorsGarmentId] = useState<string | null>(null);
 
-  const fetchGarments = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const { data } = await customizableGarmentsApi.list();
-      setGarments(data);
-    } catch (err: any) {
-      setError(describeError(err, 'Could not load customizable garment stock.'));
-    } finally {
-      setLoading(false);
+  // Stale-While-Revalidate: fetch in background if empty or stale (> 3 minutes)
+  useEffect(() => {
+    const STALE_TIME = 3 * 60 * 1000;
+    const isStale = !lastFetched || Date.now() - lastFetched > STALE_TIME;
+    if (garments.length === 0 || isStale) {
+      dispatch(fetchGarmentsThunk());
     }
-  }, []);
+  }, [dispatch, garments.length, lastFetched]);
 
-  useEffect(() => { fetchGarments(); }, [fetchGarments]);
+  const handleManualRefresh = useCallback(() => {
+    dispatch(fetchGarmentsThunk());
+  }, [dispatch]);
 
   const openAdd = () => {
     setEditingId(null);
@@ -129,8 +141,9 @@ export function CustomizationSection() {
     setFormError('');
     setSaving(true);
     try {
+      let saved: CustomizableGarment;
       if (editingId) {
-        await customizableGarmentsApi.update(editingId, {
+        saved = await customizableGarmentsApi.update(editingId, {
           label: form.label,
           price: form.price,
           sizes: form.sizes,
@@ -138,7 +151,7 @@ export function CustomizationSection() {
           status: form.status,
         });
       } else {
-        await customizableGarmentsApi.create({
+        saved = await customizableGarmentsApi.create({
           cloth_type: form.cloth_type.trim().toLowerCase(),
           label: form.label,
           price: form.price,
@@ -147,8 +160,9 @@ export function CustomizationSection() {
           status: form.status,
         });
       }
+      dispatch(upsertGarment(saved));
       setShowGarmentModal(false);
-      fetchGarments();
+      dispatch(fetchGarmentsThunk());
     } catch (e: any) {
       setFormError(describeError(e, 'Save failed.'));
     } finally {
@@ -159,10 +173,12 @@ export function CustomizationSection() {
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this cloth type and all of its color/stock data? This cannot be undone.')) return;
     try {
+      dispatch(removeGarment(id));
       await customizableGarmentsApi.remove(id);
-      fetchGarments();
+      dispatch(fetchGarmentsThunk());
     } catch (e: any) {
       alert('Delete failed: ' + describeError(e, 'Delete failed.'));
+      dispatch(fetchGarmentsThunk());
     }
   };
 
@@ -170,13 +186,35 @@ export function CustomizationSection() {
 
   return (
     <div>
-      <SectionHeader title="Customization Stock" action="Add Cloth Type" onAction={openAdd} />
+      <SectionHeader
+        title="Customization Stock"
+        action="Add Cloth Type"
+        onAction={openAdd}
+        extra={
+          <div className="flex items-center gap-2">
+            {isSyncing && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-sans text-[var(--theme-accent)]/80 bg-[var(--theme-accent)]/10 border border-[var(--theme-accent)]/20 rounded-sm">
+                <RefreshCw size={9} className="animate-spin" />
+                Syncing...
+              </span>
+            )}
+            <button
+              onClick={handleManualRefresh}
+              disabled={isSyncing}
+              title="Refresh customization stock from server"
+              className="p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)] disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={isSyncing ? 'animate-spin text-[var(--theme-accent)]' : ''} />
+            </button>
+          </div>
+        }
+      />
       <p className="text-[11px] text-[rgba(var(--theme-text-rgb),0.4)] font-sans mb-6 max-w-2xl">
         Manage the blank garments customers can design on the "Customize" page — cloth types, colors, per-size
         stock, template photography, and the print-area each design gets placed inside.
       </p>
 
-      {error && <ErrorBanner message={error} />}
+      {storeError && <ErrorBanner message={storeError} />}
 
       {loading ? (
         <div className="flex items-center gap-2 text-[11px] text-[rgba(var(--theme-text-rgb),0.4)] font-sans">
@@ -345,7 +383,7 @@ export function CustomizationSection() {
       )}
 
       {colorsGarment && (
-        <ColorsModal garment={colorsGarment} onClose={() => setColorsGarmentId(null)} onChanged={fetchGarments} />
+        <ColorsModal garment={colorsGarment} onClose={() => setColorsGarmentId(null)} onChanged={() => dispatch(fetchGarmentsThunk())} />
       )}
     </div>
   );

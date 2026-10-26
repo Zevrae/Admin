@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import NextImage from 'next/image';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -7,12 +7,13 @@ import {
   Tag, Percent, Plus, Edit2, Trash2,
   Search, X, Image, ToggleLeft, ToggleRight,
   Star, AlertCircle, TrendingUp, Users, ArrowUpRight,
-  Save, Upload, RefreshCw, Bell, BarChart3, CalendarClock,
+  Save, Upload, RefreshCw, Bell, BarChart3, CalendarClock, Calendar,
   Download, Paintbrush,
 } from 'lucide-react';
 import {
   useReactTable,
   getCoreRowModel,
+  getPaginationRowModel,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table';
@@ -23,7 +24,34 @@ import { discountsApi, Discount } from './api/discounts';
 import { ordersApi, Order } from './api/orders';
 import { analysisApi, AnalysisSummary } from './api/analysis';
 import RichTextEditor from './RichTextEditor';
-import { SectionHeader, Badge, Modal, FormField, baseInputCls, inputCls, selectCls } from './components/AdminUI';
+import { SectionHeader, Badge, Modal, FormField, Pagination, baseInputCls, inputCls, selectCls } from './components/AdminUI';
+import { useAppDispatch, useAppSelector } from './store/hooks';
+import {
+  DbProduct,
+  StockItem,
+  productToDbProduct,
+  fetchDbProductsThunk,
+  upsertProduct,
+  removeProduct,
+} from './store/slices/productsSlice';
+import {
+  fetchCollectionsThunk,
+  upsertCollection,
+  removeCollection,
+  toggleCollectionFeaturedLocally,
+} from './store/slices/collectionsSlice';
+import {
+  fetchCategoriesThunk,
+  upsertCategory,
+  removeCategory,
+} from './store/slices/categoriesSlice';
+import {
+  fetchDiscountsThunk,
+  upsertDiscount,
+  removeDiscount,
+  toggleDiscountStatusLocally,
+} from './store/slices/discountsSlice';
+import { fetchAnalysisThunk } from './store/slices/analysisSlice';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -316,6 +344,7 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
   const [filter, setFilter] = useState('All');
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [selectedDate, setSelectedDate] = useState('');
 
   // 1. Memoize the table data to prevent infinite re-renders!
   const memoizedOrders = useMemo(() => {
@@ -332,9 +361,53 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
         (customer?.name || '').toLowerCase().includes(search.toLowerCase()) ||
         o.id.toLowerCase().includes(search.toLowerCase()) ||
         (customer?.email || '').toLowerCase().includes(search.toLowerCase());
-      return matchFilter && matchSearch;
+
+      const matchDate = !selectedDate || (() => {
+        if (!o.created_at) return false;
+        const d = new Date(o.created_at);
+        if (isNaN(d.getTime())) return false;
+
+        // 1. Browser local date (YYYY-MM-DD)
+        const localY = d.getFullYear();
+        const localM = String(d.getMonth() + 1).padStart(2, '0');
+        const localD = String(d.getDate()).padStart(2, '0');
+        const localStr = `${localY}-${localM}-${localD}`;
+        if (localStr === selectedDate) return true;
+
+        // 2. Indian Standard Time (IST / Asia/Kolkata) date
+        try {
+          const istStr = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+          if (istStr === selectedDate) return true;
+        } catch (_) {}
+
+        // 3. UTC date
+        try {
+          const utcStr = d.toISOString().slice(0, 10);
+          if (utcStr === selectedDate) return true;
+        } catch (_) {}
+
+        // 4. Inverted MM/DD vs DD/MM fallback (e.g. 2026-08-10 vs 2026-10-08)
+        const parts = selectedDate.split('-');
+        if (parts.length === 3) {
+          const [y, m, day] = parts;
+          if (Number(m) <= 12 && Number(day) <= 12) {
+            const inverted = `${y}-${day}-${m}`;
+            if (localStr === inverted) return true;
+            try {
+              if (d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) === inverted) return true;
+            } catch (_) {}
+            try {
+              if (d.toISOString().slice(0, 10) === inverted) return true;
+            } catch (_) {}
+          }
+        }
+
+        return false;
+      })();
+
+      return matchFilter && matchSearch && matchDate;
     });
-  }, [orders, filter, search]);
+  }, [orders, filter, search, selectedDate]);
 
   const orderStatusColor = (s?: string) => {
     switch (s) {
@@ -426,40 +499,116 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
     })
   ], []);
 
+  const [pagination, setPagination] = useState({
+    pageIndex: 0,
+    pageSize: 10,
+  });
+
+  // Only reset to first page when search query, filter, or date explicitly changes
+  const prevFilterRef = useRef(filter);
+  const prevSearchRef = useRef(search);
+  const prevDateRef = useRef(selectedDate);
+  useEffect(() => {
+    if (prevFilterRef.current !== filter || prevSearchRef.current !== search || prevDateRef.current !== selectedDate) {
+      prevFilterRef.current = filter;
+      prevSearchRef.current = search;
+      prevDateRef.current = selectedDate;
+      setPagination(prev => ({ ...prev, pageIndex: 0 }));
+    }
+  }, [search, filter, selectedDate]);
+
   const table = useReactTable({
     data: memoizedOrders,
     columns,
+    state: {
+      pagination,
+    },
+    onPaginationChange: setPagination,
+    autoResetPageIndex: false,
     getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
     getRowId: row => row.id,
   });
+
+  // Safely clamp page index if orders count shrinks below current page
+  const totalPages = Math.max(1, Math.ceil(memoizedOrders.length / pagination.pageSize));
+  useEffect(() => {
+    if (pagination.pageIndex >= totalPages) {
+      setPagination(prev => ({ ...prev, pageIndex: totalPages - 1 }));
+    }
+  }, [totalPages, pagination.pageIndex]);
 
   return (
     <div>
       <SectionHeader title="Orders" />
-      <div className="flex flex-col sm:flex-row gap-3 mb-5">
-        <div className="relative flex-1">
+      <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 mb-5">
+        {/* Search Bar */}
+        <div className="relative w-full sm:w-56 md:w-64">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[rgba(var(--theme-text-rgb),0.3)]" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search orders, customers..."
-            className="w-full bg-[var(--theme-surface)] border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm pl-9 pr-4 py-2.5 text-[12px] text-[var(--theme-text)] font-mono placeholder:text-[rgba(var(--theme-text-rgb),0.2)] focus:outline-none focus:border-[rgba(var(--theme-accent-rgb),0.3)] transition-colors"
+            placeholder="Search orders..."
+            className="w-full bg-[var(--theme-surface)] border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm pl-9 pr-7 py-2.5 text-[12px] text-[var(--theme-text)] font-mono placeholder:text-[rgba(var(--theme-text-rgb),0.25)] focus:outline-none focus:border-[rgba(var(--theme-accent-rgb),0.4)] transition-colors"
           />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {['All', 'Pending', 'Paid', 'COD', 'Delivered', 'Custom'].map(f => (
+          {search && (
             <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`px-4 py-2 text-[9px] uppercase tracking-[0.15em] font-sans rounded-sm transition-all duration-200 ${
-                filter === f
-                  ? 'bg-[var(--theme-accent)] text-[var(--theme-bg)]'
-                  : 'bg-[var(--theme-surface)] text-[rgba(var(--theme-text-rgb),0.5)] border border-[rgba(var(--theme-text-rgb),0.1)] hover:border-[rgba(var(--theme-accent-rgb),0.3)] hover:text-[var(--theme-accent)]'
-              }`}
+              type="button"
+              onClick={() => setSearch('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-text)] transition-colors"
+              title="Clear search"
             >
-              {f}
+              <X size={12} />
             </button>
-          ))}
+          )}
+        </div>
+
+        {/* Date Filter & Status Filter Pills */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Calendar Date Filter */}
+          <div className={`relative flex items-center bg-[var(--theme-surface)] border rounded-sm px-2.5 py-1.5 transition-colors ${
+            selectedDate 
+              ? 'border-[var(--theme-accent)] text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.06)]' 
+              : 'border-[rgba(var(--theme-text-rgb),0.1)] text-[rgba(var(--theme-text-rgb),0.5)] hover:border-[rgba(var(--theme-text-rgb),0.25)]'
+          }`}>
+            <Calendar size={13} className={`mr-2 flex-shrink-0 ${selectedDate ? 'text-[var(--theme-accent)]' : 'text-[rgba(var(--theme-text-rgb),0.35)]'}`} />
+            <span className="text-[10px] uppercase tracking-wider text-[rgba(var(--theme-text-rgb),0.4)] mr-1.5 hidden sm:inline">Date:</span>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={e => setSelectedDate(e.target.value)}
+              aria-label="Filter by order date"
+              className="bg-transparent text-[11px] font-mono text-[var(--theme-text)] focus:outline-none cursor-pointer [color-scheme:dark]"
+            />
+            {selectedDate && (
+              <button
+                type="button"
+                onClick={() => setSelectedDate('')}
+                className="ml-2 text-[rgba(var(--theme-text-rgb),0.4)] hover:text-red-400 transition-colors"
+                title="Clear date filter"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+
+          {/* Status Filter Pills */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {['All', 'Pending', 'Paid', 'COD', 'Delivered', 'Custom'].map(f => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setFilter(f)}
+                className={`px-3 py-2 text-[9px] uppercase tracking-[0.12em] font-sans rounded-sm transition-all duration-200 ${
+                  filter === f
+                    ? 'bg-[var(--theme-accent)] text-[var(--theme-bg)] font-semibold shadow-sm'
+                    : 'bg-[var(--theme-surface)] text-[rgba(var(--theme-text-rgb),0.5)] border border-[rgba(var(--theme-text-rgb),0.1)] hover:border-[rgba(var(--theme-accent-rgb),0.3)] hover:text-[var(--theme-accent)]'
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       {errorMsg && (
@@ -490,8 +639,8 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
                 </tr>
               ) : table.getRowModel().rows.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-10 text-center text-[11px] uppercase tracking-[0.2em] font-sans text-[rgba(var(--theme-text-rgb),0.3)]">
-                    No orders found.
+                  <td colSpan={7} className="p-10 text-center text-[11px] font-sans text-[rgba(var(--theme-text-rgb),0.3)]">
+                    {search || filter !== 'All' || selectedDate ? 'No matching orders found.' : 'No orders found.'}
                   </td>
                 </tr>
               ) : (
@@ -618,68 +767,29 @@ export function OrdersSection({ orders, loading, errorMsg, onUpdateStatus }: {
             </tbody>
           </table>
         </div>
+
+        <Pagination
+          currentPage={table.getState().pagination.pageIndex + 1}
+          totalPages={table.getPageCount()}
+          totalItems={memoizedOrders.length}
+          pageSize={table.getState().pagination.pageSize}
+          pageSizeOptions={[10, 20, 50, 100]}
+          onPageChange={page => table.setPageIndex(page - 1)}
+          onPageSizeChange={size => {
+            table.setPageSize(size);
+            table.setPageIndex(0);
+          }}
+          itemLabel="orders"
+        />
       </div>
     </div>
   );
 }
 
-// ─── DB Product type ──────────────────────────────────────────────────────────
-
-interface StockItem {
-  size: string;
-  quantity: number;
-  _rowId?: number; 
-}
+// ─── DB Product helpers ──────────────────────────────────────────────────────────
 
 let rowIdCounter = 0;
 const nextRowId = () => ++rowIdCounter;
-
-interface DbProduct {
-  id: string;
-  name: string;
-  description: string;
-  collections: string[]; 
-  category: string;
-  subcategory: string;
-  price: number;
-  compare_price: number | null;
-  discount: number | null;
-  inventory_mode: 'size' | 'nosize';
-  stock_quantity: StockItem[];
-  in_stock: boolean;
-  images: string[];
-  status: string;
-  is_deleted?: boolean;
-  created_at: string;
-}
-
-function productToDbProduct(p: Product): DbProduct {
-  const sizeStock = p.size_stock || {};
-  const inventory_mode = p.inventory_mode || (p.sizes && p.sizes.length > 0 ? 'size' : 'nosize');
-  const sizes = p.sizes && p.sizes.length > 0 ? p.sizes : Object.keys(sizeStock);
-  const stock_quantity: StockItem[] = sizes.map(size => ({
-    size,
-    quantity: sizeStock[size] ?? 0,
-  }));
-  return {
-    id: p.id,
-    name: p.name,
-    description: p.description || '',
-    collections: p.collections || [],
-    category: p.category,
-    subcategory: p.subcategory,
-    price: p.price,
-    compare_price: p.compare_price ?? null,
-    discount: p.discount ?? null,
-    inventory_mode,
-    stock_quantity,
-    in_stock: stock_quantity.some(s => s.quantity > 0) || stock_quantity.length === 0,
-    images: p.images || [],
-    status: p.status,
-    is_deleted: p.is_deleted,
-    created_at: p.created_at,
-  };
-}
 
 function dbProductPayload(form: Omit<DbProduct, 'id' | 'created_at' | 'is_deleted'>): Partial<Product> {
   const sizes = form.inventory_mode === 'size'
@@ -759,9 +869,17 @@ const CATEGORY_MAP: Record<string, string[]> = {
 };
 
 export function ProductsSection() {
-  const [dbProducts, setDbProducts] = useState<DbProduct[]>([]);
-  const [dbLoading, setDbLoading] = useState(true);
-  const [dbError, setDbError] = useState('');
+  const dispatch = useAppDispatch();
+  const {
+    items: dbProducts,
+    loading: storeLoading,
+    isSyncing,
+    error: storeError,
+    lastFetched,
+  } = useAppSelector(state => state.products);
+
+  // Instant 0ms render: only show blocking loader if cache is completely empty
+  const dbLoading = storeLoading && dbProducts.length === 0;
 
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -851,47 +969,18 @@ export function ProductsSection() {
     return combined;
   }, [availableCategories]);
 
-  const fetchDbProducts = useCallback(async () => {
-    setDbLoading(true);
-    setDbError('');
-    try {
-      let allProducts: DbProduct[] = [];
-      let currentPage = 1;
-      let hasMore = true;
-      const MAX_PAGES = 300;
-
-      while (hasMore && currentPage <= MAX_PAGES) {
-        const response: any = await productsApi.list({ limit: 100, page: currentPage });
-
-        const items = response?.data || [];
-        const pagination = response?.pagination;
-
-        if (items.length > 0) {
-          const mappedItems = items.map((item: any) => productToDbProduct(item));
-          allProducts = [...allProducts, ...mappedItems];
-        }
-
-        if (items.length === 0) {
-          hasMore = false;
-        } else if (pagination && typeof pagination.pages === 'number') {
-          hasMore = currentPage < pagination.pages;
-          currentPage++;
-        } else if (items.length < 100) {
-          hasMore = false;
-        } else {
-          hasMore = false;
-        }
-      }
-
-      setDbProducts(allProducts);
-    } catch (err: any) {
-      setDbError('Could not load products. Make sure the database is connected.');
-    } finally {
-      setDbLoading(false);
+  // Stale-While-Revalidate: fetch in background if empty or stale (> 3 minutes)
+  useEffect(() => {
+    const STALE_TIME = 3 * 60 * 1000;
+    const isStale = !lastFetched || (Date.now() - lastFetched > STALE_TIME);
+    if (dbProducts.length === 0 || isStale) {
+      dispatch(fetchDbProductsThunk());
     }
-  }, []);
+  }, [dispatch, dbProducts.length, lastFetched]);
 
-  useEffect(() => { fetchDbProducts(); }, [fetchDbProducts]);
+  const handleManualRefresh = useCallback(() => {
+    dispatch(fetchDbProductsThunk());
+  }, [dispatch]);
 
   const openAdd = () => {
     fetchAvailableCategories();
@@ -1007,20 +1096,23 @@ export function ProductsSection() {
     try {
       const payload = dbProductPayload(form);
 
-      let productId = editingId;
+      let savedProduct: Product;
       if (editingId) {
-        await productsApi.update(editingId, payload);
+        savedProduct = await productsApi.update(editingId, payload);
       } else {
-        const created = await productsApi.create(payload);
-        productId = created.id;
+        savedProduct = await productsApi.create(payload);
       }
 
-      if (imageFiles.length > 0 && productId) {
-        await productsApi.uploadImages(productId, imageFiles);
+      if (imageFiles.length > 0 && savedProduct.id) {
+        savedProduct = await productsApi.uploadImages(savedProduct.id, imageFiles);
       }
+
+      // Optimistically update store with saved product
+      dispatch(upsertProduct(productToDbProduct(savedProduct)));
 
       setShowModal(false);
-      fetchDbProducts();
+      // Re-sync with backend in background
+      dispatch(fetchDbProductsThunk());
     } catch (err: any) {
       setFormError(err?.response?.data?.message || err.message || 'Save failed.');
     } finally {
@@ -1047,12 +1139,14 @@ export function ProductsSection() {
   const handleDelete = useCallback(async (id: string) => {
     if (!confirm('Soft delete this product? It will be removed from the active store views.')) return;
     try {
+      dispatch(removeProduct(id));
       await productsApi.remove(id);
-      fetchDbProducts();
+      dispatch(fetchDbProductsThunk());
     } catch (error: any) {
       alert('Delete failed: ' + (error?.response?.data?.message || error.message));
+      dispatch(fetchDbProductsThunk());
     }
-  }, [fetchDbProducts]);
+  }, [dispatch]);
 
   // 1. Memoize the table data to prevent infinite re-renders!
   const memoizedProducts = useMemo(() => {
@@ -1155,12 +1249,40 @@ export function ProductsSection() {
     })
   ], [openEdit, handleDelete]);
 
+  const [pagination, setPagination] = useState({
+    pageIndex: 0,
+    pageSize: 10,
+  });
+
+  // Only reset to first page when search query explicitly changes
+  const prevSearchRef = useRef(search);
+  useEffect(() => {
+    if (prevSearchRef.current !== search) {
+      prevSearchRef.current = search;
+      setPagination(prev => ({ ...prev, pageIndex: 0 }));
+    }
+  }, [search]);
+
   const table = useReactTable({
     data: memoizedProducts,
     columns,
+    state: {
+      pagination,
+    },
+    onPaginationChange: setPagination,
+    autoResetPageIndex: false,
     getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
     getRowId: row => row.id,
   });
+
+  // Safely clamp page index if products count shrinks below current page
+  const totalPages = Math.max(1, Math.ceil(memoizedProducts.length / pagination.pageSize));
+  useEffect(() => {
+    if (pagination.pageIndex >= totalPages) {
+      setPagination(prev => ({ ...prev, pageIndex: totalPages - 1 }));
+    }
+  }, [totalPages, pagination.pageIndex]);
 
   return (
     <div>
@@ -1178,18 +1300,28 @@ export function ProductsSection() {
 
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-4">
-          <span className="text-[10px] uppercase tracking-[0.2em] font-sans text-[var(--theme-accent)]">Database Products</span>
+          <div className="flex items-center gap-2.5">
+            <span className="text-[10px] uppercase tracking-[0.2em] font-sans text-[var(--theme-accent)]">Database Products</span>
+            {isSyncing && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-sans text-[var(--theme-accent)]/80 bg-[var(--theme-accent)]/10 border border-[var(--theme-accent)]/20 rounded-sm">
+                <RefreshCw size={9} className="animate-spin" />
+                Syncing with backend...
+              </span>
+            )}
+          </div>
           <button
-            onClick={() => fetchDbProducts()}
-            className="ml-auto p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)]"
+            onClick={handleManualRefresh}
+            disabled={isSyncing}
+            title="Refresh products from server"
+            className="ml-auto p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)] disabled:opacity-50"
           >
-            <RefreshCw size={11} />
+            <RefreshCw size={11} className={isSyncing ? 'animate-spin text-[var(--theme-accent)]' : ''} />
           </button>
         </div>
 
-        {dbError && (
+        {storeError && (
           <div className="mb-4 p-3 text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.1)] border border-[rgba(var(--theme-accent-rgb),0.2)] text-[11px] font-sans rounded-sm flex items-center gap-2">
-            <AlertCircle size={14} /> {dbError}
+            <AlertCircle size={14} /> {storeError}
           </div>
         )}
 
@@ -1217,7 +1349,7 @@ export function ProductsSection() {
                 ) : table.getRowModel().rows.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="p-10 text-center text-[11px] font-sans text-[rgba(var(--theme-text-rgb),0.3)]">
-                      {dbError ? 'Table not found.' : 'No products yet. Click "Add Product" to create one.'}
+                      {search ? `No products matching "${search}".` : storeError ? 'Table not found.' : 'No products yet. Click "Add Product" to create one.'}
                     </td>
                   </tr>
                 ) : (
@@ -1234,6 +1366,20 @@ export function ProductsSection() {
               </tbody>
             </table>
           </div>
+
+          <Pagination
+            currentPage={table.getState().pagination.pageIndex + 1}
+            totalPages={table.getPageCount()}
+            totalItems={memoizedProducts.length}
+            pageSize={table.getState().pagination.pageSize}
+            pageSizeOptions={[10, 20, 50, 100]}
+            onPageChange={page => table.setPageIndex(page - 1)}
+            onPageSizeChange={size => {
+              table.setPageSize(size);
+              table.setPageIndex(0);
+            }}
+            itemLabel="products"
+          />
         </div>
       </div>
 
@@ -1518,42 +1664,37 @@ export function ProductsSection() {
 // ─── Collections Section ──────────────────────────────────────────────────────
 
 export function CollectionsSection() {
-  const [collections, setCollections] = useState<Collection[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [productCounts, setProductCounts] = useState<Record<string, number>>({});
+  const dispatch = useAppDispatch();
+  const {
+    collections,
+    productCounts,
+    loading: storeLoading,
+    isSyncing,
+    error: storeError,
+    lastFetched,
+  } = useAppSelector(state => state.collections);
+
+  // Instant render: only show blocking loader if cache has 0 items
+  const loading = storeLoading && collections.length === 0;
+
   const [showModal, setShowModal] = useState(false);
   const [editingCol, setEditingCol] = useState<Collection | null>(null);
   const [form, setForm] = useState({ name: '', description: '', status: 'active', featured: false });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
-  const fetchCollections = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const { data } = await collectionsApi.list();
-      setCollections(data || []);
-      const counts: Record<string, number> = {};
-      await Promise.all(
-        (data || []).map(async (c) => {
-          try {
-            const res = await productsApi.list({ collection: c.id, limit: 1 });
-            counts[c.id] = res.pagination.total;
-          } catch {
-            counts[c.id] = 0;
-          }
-        })
-      );
-      setProductCounts(counts);
-    } catch (err: any) {
-      setError('Could not load collections. Make sure the backend is reachable.');
-    } finally {
-      setLoading(false);
+  // Stale-While-Revalidate: fetch in background if empty or stale (> 3 minutes)
+  useEffect(() => {
+    const STALE_TIME = 3 * 60 * 1000;
+    const isStale = !lastFetched || Date.now() - lastFetched > STALE_TIME;
+    if (collections.length === 0 || isStale) {
+      dispatch(fetchCollectionsThunk());
     }
-  };
+  }, [dispatch, collections.length, lastFetched]);
 
-  useEffect(() => { fetchCollections(); }, []);
+  const handleManualRefresh = useCallback(() => {
+    dispatch(fetchCollectionsThunk());
+  }, [dispatch]);
 
   const openAdd = () => { setEditingCol(null); setForm({ name: '', description: '', status: 'active', featured: false }); setFormError(''); setShowModal(true); };
   
@@ -1569,13 +1710,15 @@ export function CollectionsSection() {
     setSaving(true);
     setFormError('');
     try {
+      let saved: Collection;
       if (editingCol) {
-        await collectionsApi.update(editingCol.id, form);
+        saved = await collectionsApi.update(editingCol.id, form);
       } else {
-        await collectionsApi.create(form);
+        saved = await collectionsApi.create(form);
       }
+      dispatch(upsertCollection(saved));
       setShowModal(false);
-      fetchCollections();
+      dispatch(fetchCollectionsThunk());
     } catch (err: any) {
       setFormError(err?.response?.data?.message || err.message || 'Save failed.');
     } finally {
@@ -1586,21 +1729,25 @@ export function CollectionsSection() {
   const handleDelete = useCallback(async (id: string) => {
     if (!confirm('Remove this collection?')) return;
     try {
+      dispatch(removeCollection(id));
       await collectionsApi.remove(id);
-      fetchCollections();
+      dispatch(fetchCollectionsThunk());
     } catch (err: any) {
       alert('Delete failed: ' + (err?.response?.data?.message || err.message));
+      dispatch(fetchCollectionsThunk());
     }
-  }, []);
+  }, [dispatch]);
 
   const toggleFeatured = useCallback(async (c: Collection) => {
     try {
+      dispatch(toggleCollectionFeaturedLocally(c.id));
       await collectionsApi.update(c.id, { featured: !c.featured });
-      fetchCollections();
+      dispatch(fetchCollectionsThunk());
     } catch (err: any) {
       alert('Update failed: ' + (err?.response?.data?.message || err.message));
+      dispatch(fetchCollectionsThunk());
     }
-  }, []);
+  }, [dispatch]);
 
   // 1. Memoize Data to prevent infinite re-renders!
   const memoizedCollections = useMemo(() => collections, [collections]);
@@ -1665,12 +1812,34 @@ export function CollectionsSection() {
 
   return (
     <div>
-      <SectionHeader title="Collections" action="New Collection" onAction={openAdd} />
+      <SectionHeader
+        title="Collections"
+        action="New Collection"
+        onAction={openAdd}
+        extra={
+          <div className="flex items-center gap-2">
+            {isSyncing && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-sans text-[var(--theme-accent)]/80 bg-[var(--theme-accent)]/10 border border-[var(--theme-accent)]/20 rounded-sm">
+                <RefreshCw size={9} className="animate-spin" />
+                Syncing...
+              </span>
+            )}
+            <button
+              onClick={handleManualRefresh}
+              disabled={isSyncing}
+              title="Refresh collections from server"
+              className="p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)] disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={isSyncing ? 'animate-spin text-[var(--theme-accent)]' : ''} />
+            </button>
+          </div>
+        }
+      />
       <p className="text-[11px] text-[rgba(var(--theme-text-rgb),0.4)] font-sans mb-5">Group products into curated collections for seasonal drops and editorial features.</p>
 
-      {error && (
+      {storeError && (
         <div className="mb-4 p-3 text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.1)] border border-[rgba(var(--theme-accent-rgb),0.2)] text-[11px] font-sans rounded-sm flex items-center gap-2">
-          <AlertCircle size={14} /> {error}
+          <AlertCircle size={14} /> {storeError}
         </div>
       )}
 
@@ -1756,42 +1925,37 @@ export function CollectionsSection() {
 // ─── Categories Section ───────────────────────────────────────────────────────
 
 export function CategoriesSection() {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [productCounts, setProductCounts] = useState<Record<string, number>>({});
+  const dispatch = useAppDispatch();
+  const {
+    categories,
+    productCounts,
+    loading: storeLoading,
+    isSyncing,
+    error: storeError,
+    lastFetched,
+  } = useAppSelector(state => state.categories);
+
+  // Instant render: only show blocking loader if cache has 0 items
+  const loading = storeLoading && categories.length === 0;
+
   const [showModal, setShowModal] = useState(false);
   const [editingCat, setEditingCat] = useState<Category | null>(null);
   const [form, setForm] = useState({ name: '', description: '', parent: '', status: 'active' });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
-  const fetchCategories = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const { data } = await categoriesApi.list();
-      setCategories(data || []);
-      const counts: Record<string, number> = {};
-      await Promise.all(
-        (data || []).map(async (c) => {
-          try {
-            const res = await productsApi.list({ category: c.name, limit: 1 });
-            counts[c.id] = res.pagination.total;
-          } catch {
-            counts[c.id] = 0;
-          }
-        })
-      );
-      setProductCounts(counts);
-    } catch (err: any) {
-      setError('Could not load categories. Make sure the backend is reachable.');
-    } finally {
-      setLoading(false);
+  // Stale-While-Revalidate: fetch in background if empty or stale (> 3 minutes)
+  useEffect(() => {
+    const STALE_TIME = 3 * 60 * 1000;
+    const isStale = !lastFetched || Date.now() - lastFetched > STALE_TIME;
+    if (categories.length === 0 || isStale) {
+      dispatch(fetchCategoriesThunk());
     }
-  };
+  }, [dispatch, categories.length, lastFetched]);
 
-  useEffect(() => { fetchCategories(); }, []);
+  const handleManualRefresh = useCallback(() => {
+    dispatch(fetchCategoriesThunk());
+  }, [dispatch]);
 
   const openAdd = useCallback((parentId?: string) => {
     setEditingCat(null);
@@ -1814,13 +1978,15 @@ export function CategoriesSection() {
     setFormError('');
     try {
       const payload = { name: form.name, description: form.description, parent: form.parent || null, status: form.status };
+      let saved: Category;
       if (editingCat) {
-        await categoriesApi.update(editingCat.id, payload);
+        saved = await categoriesApi.update(editingCat.id, payload);
       } else {
-        await categoriesApi.create(payload);
+        saved = await categoriesApi.create(payload);
       }
+      dispatch(upsertCategory(saved));
       setShowModal(false);
-      fetchCategories();
+      dispatch(fetchCategoriesThunk());
     } catch (err: any) {
       setFormError(err?.response?.data?.message || err.message || 'Save failed.');
     } finally {
@@ -1831,12 +1997,14 @@ export function CategoriesSection() {
   const handleDelete = useCallback(async (id: string) => {
     if (!confirm('Remove this category? Any subcategories under it will need to be reassigned separately.')) return;
     try {
+      dispatch(removeCategory(id));
       await categoriesApi.remove(id);
-      fetchCategories();
+      dispatch(fetchCategoriesThunk());
     } catch (err: any) {
       alert('Delete failed: ' + (err?.response?.data?.message || err.message));
+      dispatch(fetchCategoriesThunk());
     }
-  }, []);
+  }, [dispatch]);
 
   // 1. Memoize Data to prevent infinite re-renders!
   const memoizedTopLevel = useMemo(() => categories.filter(c => !c.parent), [categories]);
@@ -1916,12 +2084,34 @@ export function CategoriesSection() {
 
   return (
     <div>
-      <SectionHeader title="Categories" action="New Category" onAction={() => openAdd()} />
+      <SectionHeader
+        title="Categories"
+        action="New Category"
+        onAction={() => openAdd()}
+        extra={
+          <div className="flex items-center gap-2">
+            {isSyncing && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-sans text-[var(--theme-accent)]/80 bg-[var(--theme-accent)]/10 border border-[var(--theme-accent)]/20 rounded-sm">
+                <RefreshCw size={9} className="animate-spin" />
+                Syncing...
+              </span>
+            )}
+            <button
+              onClick={handleManualRefresh}
+              disabled={isSyncing}
+              title="Refresh categories from server"
+              className="p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)] disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={isSyncing ? 'animate-spin text-[var(--theme-accent)]' : ''} />
+            </button>
+          </div>
+        }
+      />
       <p className="text-[11px] text-[rgba(var(--theme-text-rgb),0.4)] font-sans mb-5">Manage top-level categories and their subcategories that appear in navigation.</p>
 
-      {error && (
+      {storeError && (
         <div className="mb-4 p-3 text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.1)] border border-[rgba(var(--theme-accent-rgb),0.2)] text-[11px] font-sans rounded-sm flex items-center gap-2">
-          <AlertCircle size={14} /> {error}
+          <AlertCircle size={14} /> {storeError}
         </div>
       )}
 
@@ -2006,29 +2196,36 @@ export function CategoriesSection() {
 // ─── Discounts Section ────────────────────────────────────────────────────────
 
 export function DiscountsSection() {
-  const [discounts, setDiscounts] = useState<Discount[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const dispatch = useAppDispatch();
+  const {
+    discounts,
+    loading: storeLoading,
+    isSyncing,
+    error: storeError,
+    lastFetched,
+  } = useAppSelector(state => state.discounts);
+
+  // Instant render: only show blocking loader if cache has 0 items
+  const loading = storeLoading && discounts.length === 0;
+
   const [showModal, setShowModal] = useState(false);
   const [editingDiscount, setEditingDiscount] = useState<Discount | null>(null);
   const [form, setForm] = useState({ code: '', type: 'Percentage', value: '', limit_type: 'uses' as 'uses' | 'time', limit: '', expiry: '', status: 'Active' });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
-  const fetchDiscounts = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const data = await discountsApi.list();
-      setDiscounts(data || []);
-    } catch (err: any) {
-      setError('Could not load discounts. Make sure the backend is reachable.');
-    } finally {
-      setLoading(false);
+  // Stale-While-Revalidate: fetch in background if empty or stale (> 3 minutes)
+  useEffect(() => {
+    const STALE_TIME = 3 * 60 * 1000;
+    const isStale = !lastFetched || Date.now() - lastFetched > STALE_TIME;
+    if (discounts.length === 0 || isStale) {
+      dispatch(fetchDiscountsThunk());
     }
-  };
+  }, [dispatch, discounts.length, lastFetched]);
 
-  useEffect(() => { fetchDiscounts(); }, []);
+  const handleManualRefresh = useCallback(() => {
+    dispatch(fetchDiscountsThunk());
+  }, [dispatch]);
 
   const openAdd = () => {
     setEditingDiscount(null);
@@ -2061,8 +2258,9 @@ export function DiscountsSection() {
     setSaving(true);
     setFormError('');
     try {
+      let saved: Discount;
       if (editingDiscount) {
-        await discountsApi.update(editingDiscount.id, {
+        saved = await discountsApi.update(editingDiscount.id, {
           type: form.type as Discount['type'],
           value: Number(form.value),
           limit_type: form.limit_type,
@@ -2071,7 +2269,7 @@ export function DiscountsSection() {
           status: form.status as Discount['status'],
         });
       } else {
-        await discountsApi.create({
+        saved = await discountsApi.create({
           code: formattedCode,
           type: form.type as Discount['type'],
           value: Number(form.value),
@@ -2081,8 +2279,9 @@ export function DiscountsSection() {
           status: form.status as Discount['status'],
         });
       }
+      dispatch(upsertDiscount(saved));
       setShowModal(false);
-      fetchDiscounts();
+      dispatch(fetchDiscountsThunk());
     } catch (err: any) {
       const msg = err?.response?.data?.message || err.message || 'Save failed.';
       if (msg.toLowerCase().includes('duplicate')) {
@@ -2098,21 +2297,25 @@ export function DiscountsSection() {
   const handleDelete = useCallback(async (id: string) => {
     if (!confirm('Remove this discount?')) return;
     try {
+      dispatch(removeDiscount(id));
       await discountsApi.remove(id);
-      fetchDiscounts();
+      dispatch(fetchDiscountsThunk());
     } catch (err: any) {
       alert('Delete failed: ' + (err?.response?.data?.message || err.message));
+      dispatch(fetchDiscountsThunk());
     }
-  }, []);
+  }, [dispatch]);
 
   const toggleStatus = useCallback(async (d: Discount) => {
     try {
+      dispatch(toggleDiscountStatusLocally(d.id));
       await discountsApi.update(d.id, { status: d.status === 'Active' ? 'Expired' : 'Active' });
-      fetchDiscounts();
+      dispatch(fetchDiscountsThunk());
     } catch (err: any) {
       alert('Update failed: ' + (err?.response?.data?.message || err.message));
+      dispatch(fetchDiscountsThunk());
     }
-  }, []);
+  }, [dispatch]);
 
   // 1. Memoize Data to prevent infinite re-renders!
   const memoizedDiscounts = useMemo(() => discounts, [discounts]);
@@ -2204,12 +2407,34 @@ export function DiscountsSection() {
 
   return (
     <div>
-      <SectionHeader title="Discounts & Coupons" action="New Coupon" onAction={openAdd} />
+      <SectionHeader
+        title="Discounts & Coupons"
+        action="New Coupon"
+        onAction={openAdd}
+        extra={
+          <div className="flex items-center gap-2">
+            {isSyncing && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-sans text-[var(--theme-accent)]/80 bg-[var(--theme-accent)]/10 border border-[var(--theme-accent)]/20 rounded-sm">
+                <RefreshCw size={9} className="animate-spin" />
+                Syncing...
+              </span>
+            )}
+            <button
+              onClick={handleManualRefresh}
+              disabled={isSyncing}
+              title="Refresh discounts from server"
+              className="p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)] disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={isSyncing ? 'animate-spin text-[var(--theme-accent)]' : ''} />
+            </button>
+          </div>
+        }
+      />
       <p className="text-[11px] text-[rgba(var(--theme-text-rgb),0.4)] font-sans mb-5">Create coupon codes for promotions and customer loyalty programs.</p>
 
-      {error && (
+      {storeError && (
         <div className="mb-4 p-3 text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.1)] border border-[rgba(var(--theme-accent-rgb),0.2)] text-[11px] font-sans rounded-sm flex items-center gap-2">
-          <AlertCircle size={14} /> {error}
+          <AlertCircle size={14} /> {storeError}
         </div>
       )}
 
@@ -2320,24 +2545,30 @@ export function DiscountsSection() {
 // ─── Analysis (Demand Insights) ──────────────────────────────────────────────
 
 export function AnalysisSection() {
-  const [summary, setSummary] = useState<AnalysisSummary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const dispatch = useAppDispatch();
+  const {
+    summary,
+    loading: storeLoading,
+    isSyncing,
+    error: storeError,
+    lastFetched,
+  } = useAppSelector(state => state.analysis);
 
-  const fetchSummary = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const data = await analysisApi.summary();
-      setSummary(data);
-    } catch (err: any) {
-      setError('Could not load demand analytics. Make sure the backend is reachable.');
-    } finally {
-      setLoading(false);
+  // Instant render: only show full blocking loading if cache is empty
+  const loading = storeLoading && summary === null;
+
+  // Stale-While-Revalidate: fetch in background if empty or stale (> 3 minutes)
+  useEffect(() => {
+    const STALE_TIME = 3 * 60 * 1000;
+    const isStale = !lastFetched || Date.now() - lastFetched > STALE_TIME;
+    if (summary === null || isStale) {
+      dispatch(fetchAnalysisThunk());
     }
-  };
+  }, [dispatch, summary, lastFetched]);
 
-  useEffect(() => { fetchSummary(); }, []);
+  const handleManualRefresh = useCallback(() => {
+    dispatch(fetchAnalysisThunk());
+  }, [dispatch]);
 
   const productImage = (p: { images: string[] } | null) => p?.images?.[0] || '';
 
@@ -2352,14 +2583,34 @@ export function AnalysisSection() {
 
   return (
     <div>
-      <SectionHeader title="Analysis" />
+      <SectionHeader
+        title="Analysis"
+        extra={
+          <div className="flex items-center gap-2">
+            {isSyncing && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-sans text-[var(--theme-accent)]/80 bg-[var(--theme-accent)]/10 border border-[var(--theme-accent)]/20 rounded-sm">
+                <RefreshCw size={9} className="animate-spin" />
+                Syncing...
+              </span>
+            )}
+            <button
+              onClick={handleManualRefresh}
+              disabled={isSyncing}
+              title="Refresh analysis from server"
+              className="p-1.5 text-[rgba(var(--theme-text-rgb),0.3)] hover:text-[var(--theme-accent)] transition-colors border border-[rgba(var(--theme-text-rgb),0.1)] rounded-sm hover:border-[rgba(var(--theme-accent-rgb),0.3)] disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={isSyncing ? 'animate-spin text-[var(--theme-accent)]' : ''} />
+            </button>
+          </div>
+        }
+      />
       <p className="text-[11px] text-[rgba(var(--theme-text-rgb),0.4)] font-sans mb-6">
         Demand signals across the catalog — units ordered, plus "notify me" signups on items people wanted but couldn't buy.
       </p>
 
-      {error && (
+      {storeError && (
         <div className="mb-5 p-3 text-[var(--theme-accent)] bg-[rgba(var(--theme-accent-rgb),0.1)] border border-[rgba(var(--theme-accent-rgb),0.2)] text-[11px] font-sans rounded-sm flex items-center gap-2">
-          <AlertCircle size={14} /> {error}
+          <AlertCircle size={14} /> {storeError}
         </div>
       )}
 
